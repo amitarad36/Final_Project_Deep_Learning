@@ -1,0 +1,18 @@
+name: final-dl-env
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - numpy>=1.24
+  - matplotlib-base>=3.8  # Faster imports (no Qt/Tk backends)
+  - librosa>=0.10
+  - pysoundfile>=0.12
+  - ffmpeg
+  - ipykernel>=6.0  # Required for Jupyter notebook support
+  - ipywidgets>=8.0  # Interactive widgets for notebook
+  - pip:
+      - musdb>=0.3.2  # Downloads 144-track MUSDB18 dataset on first run
+      - sounddevice>=0.4  # Audio I/O support
+      - pooch>=1.8    # robust downloading/caching
+      - tqdm>=4.66    # progress bars
