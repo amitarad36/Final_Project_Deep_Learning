@@ -33,37 +33,65 @@ This project fulfills the course requirement to ``train a model... working with 
 
 \section{Methodology \& Architectures}
 We will implement two different models to solve the same problem, allowing us to perform the comparative analysis required for a high-grade report.
-
 \subsection{Approach A: Frequency Domain (Baseline)}
 \begin{itemize}
-    \item \textbf{Concept:} We convert the audio waveform into a \textbf{Spectrogram} using the Short-Time Fourier Transform (STFT). This turns the audio problem into an image segmentation problem.
+    \item \textbf{Concept:} The audio waveform is transformed into a time--frequency representation using the \textbf{Short-Time Fourier Transform (STFT)}. The complex STFT coefficients are converted into a \textbf{magnitude spectrogram}, which is treated as a 2D image. Source separation is then formulated as an image segmentation problem over the time--frequency plane.
+
+    \item \textbf{Signal Representation:} Although the STFT is complex-valued and contains both magnitude and phase information, only the \textbf{magnitude} is provided as input to the neural network. The phase is discarded during learning, simplifying the representation but making audio reconstruction ill-posed.
+
     \item \textbf{Architecture: 2D U-Net.}
     \begin{itemize}
-        \item \textbf{Input:} A spectrogram of the noisy mixture ($Time \times Frequency$).
-        \item \textbf{Output:} A ``soft mask'' (values 0 to 1) that we multiply element-wise with the input to isolate the instrument.
+        \item \textbf{Input:} Magnitude spectrogram of the mixture signal ($Time \times Frequency$).
+        \item \textbf{Encoder:} A sequence of 2D convolutional layers with downsampling extracts hierarchical spectral features, such as harmonic structures and instrument-specific frequency patterns.
+        \item \textbf{Decoder:} Symmetric upsampling layers reconstruct the time--frequency resolution. Skip connections between encoder and decoder layers preserve fine-grained spectral details.
+        \item \textbf{Output:} A real-valued \textbf{soft time--frequency mask} with values in $[0,1]$, indicating the contribution of the target source in each time--frequency bin.
     \end{itemize}
-    \item \textbf{Pros:} Easier to visualize; utilizes standard CNN architectures.
-    \item \textbf{Cons:} STFT discards phase information. Reconstructing the audio often results in artifacts because the phase must be approximated.
+
+    \item \textbf{Source Estimation and Reconstruction:} The predicted mask is applied element-wise to the mixture magnitude spectrogram to estimate the target magnitude. Audio reconstruction is performed using the \textbf{mixture phase}, followed by an inverse STFT.
+
+    \item \textbf{Training Objective:} The network is trained in a supervised manner by minimizing an $L_1$ loss between the predicted target magnitude spectrogram and the ground-truth magnitude spectrogram of the isolated source.
+
+    \item \textbf{Pros:} Interpretable representation; stable training; leverages well-established CNN architectures.
+    \item \textbf{Cons:} Phase information is discarded during learning. Reusing or approximating the phase during reconstruction introduces audible artifacts, especially in regions where multiple sources overlap in frequency.
 \end{itemize}
+
 
 \subsection{Approach B: Time Domain (Main Contribution)}
 \begin{itemize}
-    \item \textbf{Concept:} We feed the raw 1D waveform directly into the network. This avoids the phase reconstruction issue entirely.
+    \item \textbf{Concept:} Instead of relying on a fixed time--frequency transform, the model operates directly on the raw audio waveform. This allows the network to learn an internal representation optimized for the source separation task while preserving all temporal and phase information.
+
     \item \textbf{Architecture: Simplified Demucs.}
     \begin{itemize}
-        \item \textbf{Input:} Raw tensor of audio samples (e.g., shape \texttt{[Batch, Channels, Time]}).
-        \item \textbf{Technique:} Uses \textbf{1D Convolutions} with a specific stride to downsample the audio, effectively learning its own frequency decomposition (an ``incentivized DFT''). It utilizes an \textbf{LSTM (RNN)} in the bottleneck to capture long-term context.
+        \item \textbf{Input:} Raw waveform tensor with shape \texttt{[Batch, Channels, Time]}.
+        \item \textbf{Encoder:} A stack of strided 1D convolutional layers progressively downsamples the signal in time. These layers act as learnable band-pass filters, effectively learning a task-specific time--frequency decomposition.
+        \item \textbf{Bottleneck:} A recurrent module (LSTM) operates at the lowest temporal resolution, capturing long-range temporal dependencies such as rhythm, instrument continuity, and musical structure.
+        \item \textbf{Decoder:} Transposed convolutions and upsampling layers reconstruct the waveform. Skip connections from the encoder ensure accurate recovery of fine temporal details.
     \end{itemize}
-    \item \textbf{Pros:} State-of-the-Art (SOTA) performance; handles phase perfectly.
+
+    \item \textbf{Training Objective:} The model is trained end-to-end by minimizing an $L_1$ loss directly on the waveform between the predicted signal and the ground-truth target source.
+
+    \item \textbf{Pros:} State-of-the-Art (SOTA) audio quality; phase information is handled implicitly; avoids explicit signal reconstruction steps and associated artifacts.
 \end{itemize}
 
 \section{Dataset \& Training Strategy}
 We will use \textbf{Supervised Learning}, which creates perfect ``Ground Truth'' data efficiently.
 
+\subsection{Dataset: MUSDB18}
+This is the standard academic dataset for Music Source Separation. It contains $\sim$150 professionally recorded tracks. Unlike standard audio files, these tracks are provided as \textbf{multi-track stems}, meaning the Vocals, Drums, Bass, and Other (Piano/Synth) are stored as separate, perfectly aligned audio channels. This allows us to construct perfect ground-truth targets ($Y$) and inputs ($X$).
+
+\subsection{Data Augmentation \& Curriculum Strategy}
+To improve generalization and robustness, we will implement a dynamic data augmentation pipeline:
+
 \begin{itemize}
-    \item \textbf{Dataset: MUSDB18.} This is the standard academic dataset for this task. It contains $\sim$150 tracks where the stems (Vocals, Drums, Bass, Other) are stored as separate files.
-    \item \textbf{Data Generation:} We do \textbf{not} need to label data manually. We load a ``Piano'' track and a ``Drums'' track, sum them together to create a mixture $X$, and task the model with predicting the original Piano track $Y$.
-    \item \textbf{Loss Function:} L1 Loss (Mean Absolute Error) between the predicted waveform and the target waveform.
+    \item \textbf{Random Mixing (Remixing):} Instead of training only on the original songs, we will generate synthetic mixtures on-the-fly by summing stems from \textit{different} tracks (e.g., combining ``Drums from Song A'' with ``Piano from Song B''). This prevents the model from memorizing specific song structures and forces it to learn instrument timbres.
+    
+    \item \textbf{Curriculum Learning:} We will experiment with a progressive training difficulty schedule:
+    \begin{itemize}
+        \item \textbf{Stage 1 (Simple):} The model trains on mixtures of only 2 sources (e.g., Target Instrument + 1 Distractor).
+        \item \textbf{Stage 2 (Intermediate):} We increase complexity to 3 sources (Target + 2 Distractors).
+        \item \textbf{Stage 3 (Full):} The model trains on the full mixture (Target + All Distractors).
+    \end{itemize}
+    This approach allows the model to learn basic separation filters before tackling complex, dense audio mixtures.
 \end{itemize}
 
 \section{Work Plan \& Report Structure}
@@ -73,7 +101,7 @@ The course guidelines state that alternative projects are ``not recommended'' un
 \begin{enumerate}
     \item \textbf{Introduction:} Define the ``Cocktail Party Problem'' and the shift from Spectral to Waveform modeling.
     \item \textbf{Related Work:} Review key papers (Open-Unmix for spectral, Wave-U-Net for 1D convs, Demucs for SOTA).
-    \item \textbf{Methodology:} Detail our implementation of the 1D Convolution blocks and the U-Net.
+    \item \textbf{Methodology:} Detail our implementation of the 1D Convolution blocks and the U-Net, including the Curriculum Learning pipeline.
     \item \textbf{Experiments:} 
     \begin{itemize}
         \item \textbf{Quantitative:} Measure Signal-to-Distortion Ratio (SDR) on a held-out test set.
