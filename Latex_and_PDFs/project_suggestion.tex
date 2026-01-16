@@ -1,0 +1,93 @@
+\documentclass[11pt, a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage{geometry}
+\usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{parskip}
+
+% Page margins
+\geometry{left=2.5cm, right=2.5cm, top=2.5cm, bottom=2.5cm}
+
+% Title formatting
+\title{\textbf{Project Proposal: Deep Music Source Separation} \\ \large Winter 2026 Final Project}
+\author{Team Proposal}
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\section{Executive Summary}
+Instead of selecting one of the three pre-defined options (Pose Estimation, Hallucinations, Inpainting), we propose an \textbf{``Alternative Project''} focused on \textbf{Music Source Separation (MSS)}.
+
+\textbf{The Goal:} To take a mixed music track (a ``mixture'') and use Deep Learning to extract a single instrument stem (e.g., piano) from it.
+
+\textbf{The Research Angle:} We will implement and compare two distinct deep learning paradigms:
+\begin{enumerate}
+    \item \textbf{Frequency Domain (The ``Image'' Approach):} Treating audio as a 2D Spectrogram and using computer vision techniques (U-Net).
+    \item \textbf{Time Domain (The ``Waveform'' Approach):} Treating audio as a 1D signal and using raw audio convolutions (Demucs architecture).
+\end{enumerate}
+
+This project fulfills the course requirement to ``train a model... working with a non-trivial amount of data'' and extends learned material in a ``research context''.
+
+\section{Methodology \& Architectures}
+We will implement two different models to solve the same problem, allowing us to perform the comparative analysis required for a high-grade report.
+
+\subsection{Approach A: Frequency Domain (Baseline)}
+\begin{itemize}
+    \item \textbf{Concept:} We convert the audio waveform into a \textbf{Spectrogram} using the Short-Time Fourier Transform (STFT). This turns the audio problem into an image segmentation problem.
+    \item \textbf{Architecture: 2D U-Net.}
+    \begin{itemize}
+        \item \textbf{Input:} A spectrogram of the noisy mixture ($Time \times Frequency$).
+        \item \textbf{Output:} A ``soft mask'' (values 0 to 1) that we multiply element-wise with the input to isolate the instrument.
+    \end{itemize}
+    \item \textbf{Pros:} Easier to visualize; utilizes standard CNN architectures.
+    \item \textbf{Cons:} STFT discards phase information. Reconstructing the audio often results in artifacts because the phase must be approximated.
+\end{itemize}
+
+\subsection{Approach B: Time Domain (Main Contribution)}
+\begin{itemize}
+    \item \textbf{Concept:} We feed the raw 1D waveform directly into the network. This avoids the phase reconstruction issue entirely.
+    \item \textbf{Architecture: Simplified Demucs.}
+    \begin{itemize}
+        \item \textbf{Input:} Raw tensor of audio samples (e.g., shape \texttt{[Batch, Channels, Time]}).
+        \item \textbf{Technique:} Uses \textbf{1D Convolutions} with a specific stride to downsample the audio, effectively learning its own frequency decomposition (an ``incentivized DFT''). It utilizes an \textbf{LSTM (RNN)} in the bottleneck to capture long-term context.
+    \end{itemize}
+    \item \textbf{Pros:} State-of-the-Art (SOTA) performance; handles phase perfectly.
+\end{itemize}
+
+\section{Dataset \& Training Strategy}
+We will use \textbf{Supervised Learning}, which creates perfect ``Ground Truth'' data efficiently.
+
+\begin{itemize}
+    \item \textbf{Dataset: MUSDB18.} This is the standard academic dataset for this task. It contains $\sim$150 tracks where the stems (Vocals, Drums, Bass, Other) are stored as separate files.
+    \item \textbf{Data Generation:} We do \textbf{not} need to label data manually. We load a ``Piano'' track and a ``Drums'' track, sum them together to create a mixture $X$, and task the model with predicting the original Piano track $Y$.
+    \item \textbf{Loss Function:} L1 Loss (Mean Absolute Error) between the predicted waveform and the target waveform.
+\end{itemize}
+
+\section{Work Plan \& Report Structure}
+The course guidelines state that alternative projects are ``not recommended'' unless the students are ``highly driven'' and provide a detailed ``Related Work'' section.
+
+\textbf{Proposed Report Sections:}
+\begin{enumerate}
+    \item \textbf{Introduction:} Define the ``Cocktail Party Problem'' and the shift from Spectral to Waveform modeling.
+    \item \textbf{Related Work:} Review key papers (Open-Unmix for spectral, Wave-U-Net for 1D convs, Demucs for SOTA).
+    \item \textbf{Methodology:} Detail our implementation of the 1D Convolution blocks and the U-Net.
+    \item \textbf{Experiments:} 
+    \begin{itemize}
+        \item \textbf{Quantitative:} Measure Signal-to-Distortion Ratio (SDR) on a held-out test set.
+        \item \textbf{Qualitative:} Visual comparison of Spectrograms and listening tests.
+    \end{itemize}
+    \item \textbf{Work Report:} Documentation of code written and challenges faced.
+\end{enumerate}
+
+\section{Feasibility \& Logistics}
+\begin{itemize}
+    \item \textbf{Submission Deadline:} 5.3.2026.
+    \item \textbf{Libraries:} PyTorch (core), \texttt{musdb} (data loading), \texttt{torchaudio} (transforms).
+    \item \textbf{Compute Strategy:} Audio models can be memory-intensive. We will likely downsample audio to 16kHz or 22kHz to speed up training on standard GPUs.
+    \item \textbf{Why this works:} It combines \textbf{Fourier Analysis} (STFT), \textbf{Linear Algebra} (Matrix operations), and \textbf{Deep Learning} (RNNs/CNNs), leveraging our existing academic strengths.
+\end{itemize}
+
+\end{document}
