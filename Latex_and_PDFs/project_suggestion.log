@@ -1,4 +1,4 @@
-This is pdfTeX, Version 3.141592653-2.6-1.40.25 (MiKTeX 24.1) (preloaded format=pdflatex 2025.12.9)  16 JAN 2026 12:40
+This is pdfTeX, Version 3.141592653-2.6-1.40.25 (MiKTeX 24.1) (preloaded format=pdflatex 2025.12.9)  17 JAN 2026 14:24
 entering extended mode
  restricted \write18 enabled.
  %&-line parsing enabled.
@@ -296,12 +296,29 @@ LaTeX Font Info:    External font `cmex10' loaded for size
 (Font)              <8> on input line 20.
 LaTeX Font Info:    External font `cmex10' loaded for size
 (Font)              <6> on input line 20.
-LaTeX Font Info:    External font `cmex10' loaded for size
-(Font)              <10.95> on input line 44.
  [1
 
-{C:/Users/amita/AppData/Local/MiKTeX/fonts/map/pdftex/pdftex.map}] [2] [3] [4] 
-(project_suggestion.aux)
+{C:/Users/amita/AppData/Local/MiKTeX/fonts/map/pdftex/pdftex.map}]
+LaTeX Font Info:    External font `cmex10' loaded for size
+(Font)              <10.95> on input line 69.
+ [2]
+! Misplaced alignment tab character &.
+<argument> Feasibility &
+                         Logistics
+l.111 \section{Feasibility & Logistics}
+                                       
+I can't figure out why you would want to use a tab mark
+here. If you just want an ampersand, the remedy is
+simple: Just type `I\&' now. But if some right brace
+up above has ended a previous alignment prematurely,
+you're probably due for more error messages, and you
+might try typing `S' now just to see what is salvageable.
+
+
+Package hyperref Warning: Token not allowed in a PDF string (Unicode):
+(hyperref)                removing `alignment tab' on input line 111.
+
+[3] (project_suggestion.aux)
  ***********
 LaTeX2e <2023-11-01> patch level 1
 L3 programming layer <2024-01-04>
@@ -313,17 +330,17 @@ Package rerunfilecheck Warning: File `project_suggestion.out' has changed.
 (rerunfilecheck)                or use package `bookmark'.
 
 Package rerunfilecheck Info: Checksums for `project_suggestion.out':
-(rerunfilecheck)             Before: B06880C200145A9663C2CF23EB47E8EF;1436
-(rerunfilecheck)             After:  729C7FAA8D12F5D0CB8D741121F8D419;1843.
+(rerunfilecheck)             Before: 729C7FAA8D12F5D0CB8D741121F8D419;1843
+(rerunfilecheck)             After:  AB703C8A341E4C0D51BA727D97C0AFE7;2391.
  ) 
 Here is how much of TeX's memory you used:
- 8753 strings out of 474486
- 139208 string characters out of 5743755
+ 8757 strings out of 474486
+ 139271 string characters out of 5743755
  1937542 words of memory out of 5000000
- 30951 multiletter control sequences out of 15000+600000
+ 30953 multiletter control sequences out of 15000+600000
  564402 words of font info for 57 fonts, out of 8000000 for 9000
  1141 hyphenation exceptions out of 8191
- 75i,6n,79p,1209b,611s stack positions out of 10000i,1000n,20000p,200000b,200000s
+ 75i,6n,79p,1209b,533s stack positions out of 10000i,1000n,20000p,200000b,200000s
  <C:\Users\amita\AppData\Local\MiKTeX\fonts/pk/ljfour/jknappen/ec/dpi600\tcrm
 1095.pk><C:/Users/amita/AppData/Local/Programs/MiKTeX/fonts/type1/public/amsfon
 ts/cm/cmbx10.pfb><C:/Users/amita/AppData/Local/Programs/MiKTeX/fonts/type1/publ
@@ -331,14 +348,12 @@ ic/amsfonts/cm/cmbx12.pfb><C:/Users/amita/AppData/Local/Programs/MiKTeX/fonts/t
 ype1/public/amsfonts/cm/cmmi10.pfb><C:/Users/amita/AppData/Local/Programs/MiKTe
 X/fonts/type1/public/amsfonts/cm/cmr10.pfb><C:/Users/amita/AppData/Local/Progra
 ms/MiKTeX/fonts/type1/public/amsfonts/cm/cmr12.pfb><C:/Users/amita/AppData/Loca
-l/Programs/MiKTeX/fonts/type1/public/amsfonts/cm/cmr8.pfb><C:/Users/amita/AppDa
-ta/Local/Programs/MiKTeX/fonts/type1/public/amsfonts/cm/cmsy10.pfb><C:/Users/am
-ita/AppData/Local/Programs/MiKTeX/fonts/type1/public/amsfonts/cm/cmti10.pfb><C:
-/Users/amita/AppData/Local/Programs/MiKTeX/fonts/type1/public/amsfonts/cm/cmtt1
-0.pfb>
-Output written on project_suggestion.pdf (4 pages, 146229 bytes).
+l/Programs/MiKTeX/fonts/type1/public/amsfonts/cm/cmsy10.pfb><C:/Users/amita/App
+Data/Local/Programs/MiKTeX/fonts/type1/public/amsfonts/cm/cmti10.pfb><C:/Users/
+amita/AppData/Local/Programs/MiKTeX/fonts/type1/public/amsfonts/cm/cmtt10.pfb>
+Output written on project_suggestion.pdf (3 pages, 131155 bytes).
 PDF statistics:
  115 PDF objects out of 1000 (max. 8388607)
- 21 named destinations out of 1000 (max. 500000)
- 57 words of extra memory for PDF output out of 10000 (max. 10000000)
+ 23 named destinations out of 1000 (max. 500000)
+ 73 words of extra memory for PDF output out of 10000 (max. 10000000)
 

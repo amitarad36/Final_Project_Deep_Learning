@@ -1,0 +1,40 @@
+# Data and audio files
+data/
+*.wav
+*.mp3
+*.flac
+*.m4a
+*.aac
+
+# Model checkpoints and outputs
+checkpoints/
+outputs/
+*.pt
+*.pth
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.Python
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Environment
+.conda/
+.env
+venv/
+env/
+
+# OS
+.DS_Store
+Thumbs.db

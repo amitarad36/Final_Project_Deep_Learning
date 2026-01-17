@@ -23,99 +23,96 @@ Instead of selecting one of the three pre-defined options (Pose Estimation, Hall
 
 \textbf{The Goal:} To take a mixed music track (a ``mixture'') and use Deep Learning to extract a single instrument stem (e.g., piano) from it.
 
-\textbf{The Research Angle:} We will implement and compare two distinct deep learning paradigms:
+\textbf{The Research Angle:} We will implement and compare distinct deep learning paradigms, specifically investigating the impact of \textbf{Time-Domain modeling} and \textbf{Attention mechanisms} on audio quality:
 \begin{enumerate}
-    \item \textbf{Frequency Domain (The ``Image'' Approach):} Treating audio as a 2D Spectrogram and using computer vision techniques (U-Net).
-    \item \textbf{Time Domain (The ``Waveform'' Approach):} Treating audio as a 1D signal and using raw audio convolutions (Demucs architecture).
+    \item \textbf{Baseline:} Frequency Domain U-Net (Spectrogram-based).
+    \item \textbf{Model B1:} Time Domain Demucs with \textbf{LSTM} (Recurrent modeling).
+    \item \textbf{Model B2:} Time Domain Demucs with \textbf{Self-Attention} (Transformer modeling).
 \end{enumerate}
 
 This project fulfills the course requirement to ``train a model... working with a non-trivial amount of data'' and extends learned material in a ``research context''.
 
 \section{Methodology \& Architectures}
-We will implement two different models to solve the same problem, allowing us to perform the comparative analysis required for a high-grade report.
+We will implement three variations to isolate the effects of different architectural choices.
+
 \subsection{Approach A: Frequency Domain (Baseline)}
 \begin{itemize}
-    \item \textbf{Concept:} The audio waveform is transformed into a time--frequency representation using the \textbf{Short-Time Fourier Transform (STFT)}. The complex STFT coefficients are converted into a \textbf{magnitude spectrogram}, which is treated as a 2D image. Source separation is then formulated as an image segmentation problem over the time--frequency plane.
-
-    \item \textbf{Signal Representation:} Although the STFT is complex-valued and contains both magnitude and phase information, only the \textbf{magnitude} is provided as input to the neural network. The phase is discarded during learning, simplifying the representation but making audio reconstruction ill-posed.
-
-    \item \textbf{Architecture: 2D U-Net.}
-    \begin{itemize}
-        \item \textbf{Input:} Magnitude spectrogram of the mixture signal ($Time \times Frequency$).
-        \item \textbf{Encoder:} A sequence of 2D convolutional layers with downsampling extracts hierarchical spectral features, such as harmonic structures and instrument-specific frequency patterns.
-        \item \textbf{Decoder:} Symmetric upsampling layers reconstruct the time--frequency resolution. Skip connections between encoder and decoder layers preserve fine-grained spectral details.
-        \item \textbf{Output:} A real-valued \textbf{soft time--frequency mask} with values in $[0,1]$, indicating the contribution of the target source in each time--frequency bin.
-    \end{itemize}
-
-    \item \textbf{Source Estimation and Reconstruction:} The predicted mask is applied element-wise to the mixture magnitude spectrogram to estimate the target magnitude. Audio reconstruction is performed using the \textbf{mixture phase}, followed by an inverse STFT.
-
-    \item \textbf{Training Objective:} The network is trained in a supervised manner by minimizing an $L_1$ loss between the predicted target magnitude spectrogram and the ground-truth magnitude spectrogram of the isolated source.
-
-    \item \textbf{Pros:} Interpretable representation; stable training; leverages well-established CNN architectures.
-    \item \textbf{Cons:} Phase information is discarded during learning. Reusing or approximating the phase during reconstruction introduces audible artifacts, especially in regions where multiple sources overlap in frequency.
+    \item \textbf{Concept:} The audio is transformed into a \textbf{Magnitude Spectrogram} (via STFT) and treated as an image. The network predicts a soft mask to separate the source.
+    \item \textbf{Architecture:} \textbf{2D U-Net} with standard 2D convolutions.
+    \item \textbf{Limitation:} Discards phase information, leading to imperfect reconstruction. Used here as a baseline to demonstrate the superiority of time-domain methods.
 \end{itemize}
-
 
 \subsection{Approach B: Time Domain (Main Contribution)}
 \begin{itemize}
-    \item \textbf{Concept:} Instead of relying on a fixed time--frequency transform, the model operates directly on the raw audio waveform. This allows the network to learn an internal representation optimized for the source separation task while preserving all temporal and phase information.
+    \item \textbf{Core Concept:} The model operates directly on the raw \textbf{1D Waveform}. This preserves phase information and allows the network to learn its own optimal frequency decomposition.
+    \item \textbf{Backbone:} A \textbf{Simplified Demucs} architecture using strided 1D convolutions for the Encoder and transposed 1D convolutions for the Decoder.
+\end{itemize}
 
-    \item \textbf{Architecture: Simplified Demucs.}
-    \begin{itemize}
-        \item \textbf{Input:} Raw waveform tensor with shape \texttt{[Batch, Channels, Time]}.
-        \item \textbf{Encoder:} A stack of strided 1D convolutional layers progressively downsamples the signal in time. These layers act as learnable band-pass filters, effectively learning a task-specific time--frequency decomposition.
-        \item \textbf{Bottleneck:} A recurrent module (LSTM) operates at the lowest temporal resolution, capturing long-range temporal dependencies such as rhythm, instrument continuity, and musical structure.
-        \item \textbf{Decoder:} Transposed convolutions and upsampling layers reconstruct the waveform. Skip connections from the encoder ensure accurate recovery of fine temporal details.
-    \end{itemize}
+We will compare two specific variations of the \textbf{Bottleneck} (the deepest layer of the network):
 
-    \item \textbf{Training Objective:} The model is trained end-to-end by minimizing an $L_1$ loss directly on the waveform between the predicted signal and the ground-truth target source.
+\subsubsection*{Model B1: Recurrent Bottleneck (LSTM)}
+\begin{itemize}
+    \item \textbf{Mechanism:} Uses a bi-directional \textbf{LSTM} (Long Short-Term Memory) in the bottleneck.
+    \item \textbf{Hypothesis:} LSTMs excel at capturing \textbf{local continuity} and smooth transitions between notes, but may struggle with long-term dependencies (e.g., a drum beat repeating every 4 seconds).
+\end{itemize}
 
-    \item \textbf{Pros:} State-of-the-Art (SOTA) audio quality; phase information is handled implicitly; avoids explicit signal reconstruction steps and associated artifacts.
+\subsubsection*{Model B2: Attention Bottleneck (Transformer)}
+\begin{itemize}
+    \item \textbf{Mechanism:} Replaces the LSTM with a \textbf{Multi-Head Self-Attention} layer (Transformer Encoder) and positional embeddings.
+    \item \textbf{Hypothesis:} Attention provides a \textbf{global receptive field}, allowing the model to attend to similar sounds across the entire input window. We expect this to improve performance on repetitive structures (rhythm) but potentially require more data to converge than the LSTM.
 \end{itemize}
 
 \section{Dataset \& Training Strategy}
-We will use \textbf{Supervised Learning}, which creates perfect ``Ground Truth'' data efficiently.
+We will use \textbf{Supervised Learning}, creating perfect ``Ground Truth'' data efficiently.
 
 \subsection{Dataset: MUSDB18}
-This is the standard academic dataset for Music Source Separation. It contains $\sim$150 professionally recorded tracks. Unlike standard audio files, these tracks are provided as \textbf{multi-track stems}, meaning the Vocals, Drums, Bass, and Other (Piano/Synth) are stored as separate, perfectly aligned audio channels. This allows us to construct perfect ground-truth targets ($Y$) and inputs ($X$).
+This is the standard academic dataset for Music Source Separation, containing $\sim$150 tracks with isolated stems (Vocals, Drums, Bass, Other). This allows us to construct perfect ground-truth targets ($Y$) and inputs ($X$).
 
 \subsection{Data Augmentation \& Curriculum Strategy}
 To improve generalization and robustness, we will implement a dynamic data augmentation pipeline:
 
 \begin{itemize}
-    \item \textbf{Random Mixing (Remixing):} Instead of training only on the original songs, we will generate synthetic mixtures on-the-fly by summing stems from \textit{different} tracks (e.g., combining ``Drums from Song A'' with ``Piano from Song B''). This prevents the model from memorizing specific song structures and forces it to learn instrument timbres.
-    
+    \item \textbf{Random Mixing (Remixing):} We will generate synthetic mixtures on-the-fly by summing stems from \textit{different} tracks (e.g., combining ``Drums from Song A'' with ``Piano from Song B'').
     \item \textbf{Curriculum Learning:} We will experiment with a progressive training difficulty schedule:
     \begin{itemize}
-        \item \textbf{Stage 1 (Simple):} The model trains on mixtures of only 2 sources (e.g., Target Instrument + 1 Distractor).
-        \item \textbf{Stage 2 (Intermediate):} We increase complexity to 3 sources (Target + 2 Distractors).
-        \item \textbf{Stage 3 (Full):} The model trains on the full mixture (Target + All Distractors).
+        \item \textbf{Stage 1 (Simple):} Train on mixtures of 2 sources (Target + 1 Distractor).
+        \item \textbf{Stage 2 (Intermediate):} Increase to 3 sources.
+        \item \textbf{Stage 3 (Full):} Train on the full mixture (Target + All Distractors).
     \end{itemize}
-    This approach allows the model to learn basic separation filters before tackling complex, dense audio mixtures.
 \end{itemize}
 
-\section{Work Plan \& Report Structure}
-The course guidelines state that alternative projects are ``not recommended'' unless the students are ``highly driven'' and provide a detailed ``Related Work'' section.
+\section{Experiments \& Comparative Analysis}
+The core of our report will focus on comparing the three models (Baseline, B1, B2).
 
-\textbf{Proposed Report Sections:}
+\subsection{Quantitative Metrics}
+We will evaluate all models on the held-out test set using the standard \texttt{museval} library:
+\begin{itemize}
+    \item \textbf{SDR (Signal-to-Distortion Ratio):} The primary metric for source separation quality.
+    \item \textbf{SIR (Signal-to-Interference Ratio):} Measures how much of the "other" instruments leaked into the prediction.
+    \item \textbf{SAR (Signal-to-Artifacts Ratio):} Measures "robotic" or "metallic" noise introduced by the model.
+\end{itemize}
+
+\subsection{Qualitative Analysis (The "Listen" Test)}
+We will specifically analyze:
+\begin{itemize}
+    \item \textbf{Phase Coherence:} Does Model B (Time Domain) produce crisper audio than Model A (Spectrogram)?
+    \item \textbf{Long-Range Structure:} Does Model B2 (Attention) handle repetitive drum beats better than Model B1 (LSTM)?
+    \item \textbf{Transient Response:} Which model better preserves the sharp "attack" of a piano key press?
+\end{itemize}
+
+\section{Work Plan}
 \begin{enumerate}
-    \item \textbf{Introduction:} Define the ``Cocktail Party Problem'' and the shift from Spectral to Waveform modeling.
-    \item \textbf{Related Work:} Review key papers (Open-Unmix for spectral, Wave-U-Net for 1D convs, Demucs for SOTA).
-    \item \textbf{Methodology:} Detail our implementation of the 1D Convolution blocks and the U-Net, including the Curriculum Learning pipeline.
-    \item \textbf{Experiments:} 
-    \begin{itemize}
-        \item \textbf{Quantitative:} Measure Signal-to-Distortion Ratio (SDR) on a held-out test set.
-        \item \textbf{Qualitative:} Visual comparison of Spectrograms and listening tests.
-    \end{itemize}
-    \item \textbf{Work Report:} Documentation of code written and challenges faced.
+    \item \textbf{Week 1:} Setup data loader (MUSDB18) and implement the Baseline (U-Net).
+    \item \textbf{Week 2:} Implement Model B1 (Demucs + LSTM) and verify waveform reconstruction.
+    \item \textbf{Week 3:} Implement Model B2 (Demucs + Attention) and run training comparisons.
+    \item \textbf{Week 4:} Evaluation, metric calculation, and report writing.
 \end{enumerate}
 
-\section{Feasibility \& Logistics}
+\section{Feasibility & Logistics}
 \begin{itemize}
     \item \textbf{Submission Deadline:} 5.3.2026.
-    \item \textbf{Libraries:} PyTorch (core), \texttt{musdb} (data loading), \texttt{torchaudio} (transforms).
-    \item \textbf{Compute Strategy:} Audio models can be memory-intensive. We will likely downsample audio to 16kHz or 22kHz to speed up training on standard GPUs.
-    \item \textbf{Why this works:} It combines \textbf{Fourier Analysis} (STFT), \textbf{Linear Algebra} (Matrix operations), and \textbf{Deep Learning} (RNNs/CNNs), leveraging our existing academic strengths.
+    \item \textbf{Libraries:} PyTorch (core), \texttt{musdb} (data loading), \texttt{torchaudio}.
+    \item \textbf{Compute Strategy:} We will downsample audio to 16kHz or 22kHz to manage memory usage for the Attention mechanism.
 \end{itemize}
 
 \end{document}
