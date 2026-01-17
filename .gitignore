@@ -1,16 +1,9 @@
-# Data and audio files
-data/
-*.wav
-*.mp3
-*.flac
-*.m4a
-*.aac
+# Large datasets (MUSDB18 will be auto-downloaded)
+data/musdb18/
+data/curriculum_cache/
 
-# Model checkpoints and outputs
-checkpoints/
+# Generated outputs
 outputs/
-*.pt
-*.pth
 
 # Python cache
 __pycache__/
