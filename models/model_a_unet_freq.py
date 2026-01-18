@@ -76,9 +76,12 @@ class STFTProcessor:
                 hop_length=self.hop_length,
                 window=self.window
             )
+            # FIX: Apply log compression to handle dynamic range
+            # Squashes loud (100.0 -> 4.6) and preserves quiet (0.01 -> 0.01)
             magnitude = np.abs(stft)
+            log_magnitude = np.log1p(magnitude)  # log(1 + x)
             phase = np.angle(stft)
-            return magnitude, phase
+            return log_magnitude, phase
         else:
             # Stereo/Multi-channel
             magnitudes = []
@@ -90,29 +93,37 @@ class STFTProcessor:
                     hop_length=self.hop_length,
                     window=self.window
                 )
-                magnitudes.append(np.abs(stft))
+                # FIX: Apply log compression to handle dynamic range
+                magnitude = np.abs(stft)
+                log_magnitude = np.log1p(magnitude)  # log(1 + x)
+                magnitudes.append(log_magnitude)
                 phases.append(np.angle(stft))
             return np.stack(magnitudes), np.stack(phases)
     
     def magnitude_phase_to_waveform(
         self,
-        magnitude: np.ndarray,
+        log_magnitude: np.ndarray,
         phase: np.ndarray
     ) -> np.ndarray:
         """
-        Reconstruct waveform from magnitude and phase.
+        Reconstruct waveform from log-magnitude and phase.
         
         Args:
-            magnitude: Magnitude spectrogram
+            log_magnitude: Log-compressed magnitude spectrogram (output from waveform_to_magnitude_phase)
             phase: Phase spectrogram (same shape as magnitude)
             
         Returns:
             Reconstructed waveform of shape (n_samples,) or (channels, n_samples)
         """
-        # Combine magnitude and phase
-        complex_spec = magnitude * np.exp(1j * phase)
+        # FIX: Reverse log compression: exp(x) - 1
+        linear_magnitude = np.expm1(log_magnitude)
+        # Ensure non-negative (numerical stability)
+        linear_magnitude = np.maximum(0, linear_magnitude)
         
-        if magnitude.ndim == 2:
+        # Combine magnitude and phase
+        complex_spec = linear_magnitude * np.exp(1j * phase)
+        
+        if log_magnitude.ndim == 2:
             # Mono
             waveform = librosa.istft(
                 complex_spec,
@@ -123,7 +134,7 @@ class STFTProcessor:
         else:
             # Stereo/Multi-channel
             waveforms = []
-            for ch in range(magnitude.shape[0]):
+            for ch in range(log_magnitude.shape[0]):
                 wf = librosa.istft(
                     complex_spec[ch],
                     hop_length=self.hop_length,
@@ -328,6 +339,26 @@ class FrequencyDomainUNet(nn.Module):
         # Output layer: Produce mask [0, 1]
         self.final_conv = nn.Conv2d(base_channels, 1, kernel_size=1)
         self.sigmoid = nn.Sigmoid()
+        
+        # Initialize weights for better training
+        self._initialize_weights()
+    
+    def _initialize_weights(self):
+        """
+        Initialize network weights using Kaiming/He initialization.
+        
+        Critical for training deep networks and preventing vanishing/exploding gradients.
+        """
+        for m in self.modules():
+            if isinstance(m, (nn.Conv2d, nn.ConvTranspose2d)):
+                # Kaiming initialization for ReLU activations
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.BatchNorm2d):
+                # Standard initialization for batch norm
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -473,8 +504,10 @@ class ModelATrainer:
         model: nn.Module,
         train_loader: torch.utils.data.DataLoader,
         val_loader: torch.utils.data.DataLoader,
-        learning_rate: float = 1e-3,
-        device: str = 'cpu'
+        learning_rate: float = 1e-4, #default rate is 1e-4
+        device: str = 'cpu',
+        use_energy_weighted_loss: bool = False,
+        grad_clip_max_norm: Optional[float] = 10.0
     ):
         """
         Initialize trainer.
@@ -492,14 +525,19 @@ class ModelATrainer:
         self.device = device
         
         self.optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-        self.loss_fn = nn.L1Loss()
+        self.loss_fn = nn.MSELoss()  # MSE instead of L1 for better gradient flow
+        self.use_energy_weighted_loss = use_energy_weighted_loss
+        self.grad_clip_max_norm = grad_clip_max_norm
         self.best_val_loss = float('inf')
         self.history = {'train_loss': [], 'val_loss': []}
     
-    def train_epoch(self) -> float:
+    def train_epoch(self, epoch: int = 0) -> float:
         """
         Train for one epoch.
         
+        Args:
+            epoch: Current epoch number (for diagnostics)
+            
         Returns:
             Average training loss
         """
@@ -507,9 +545,10 @@ class ModelATrainer:
         
         self.model.train()
         total_loss = 0.0
+        is_first_epoch = (epoch == 0)
         
         pbar = tqdm(self.train_loader, desc='Training', leave=False)
-        for batch in pbar:
+        for batch_idx, batch in enumerate(pbar):
             mixture_mag = batch['mixture_mag'].to(self.device)
             target_mag = batch['target_mag'].to(self.device)
             
@@ -517,19 +556,59 @@ class ModelATrainer:
             self.optimizer.zero_grad()
             predicted_mask = self.model(mixture_mag)
             
-            # Compute loss: L1 loss between mask and target
-            # Target mask = target_mag / mixture_mag (clamped)
+            # Compute loss: L1 loss between predicted mask and ideal mask
+            # mixture_mag/target_mag are log-compressed; build mask in linear domain
+            mixture_lin = torch.expm1(mixture_mag)
+            target_lin = torch.expm1(target_mag)
             target_mask = torch.clamp(
-                target_mag / (mixture_mag + 1e-8),
+                target_lin / (mixture_lin + 1e-8),
                 min=0.0,
                 max=1.0
             )
             
-            loss = self.loss_fn(predicted_mask, target_mask)
+            # Diagnostic output on first batch of first epoch
+            if is_first_epoch and batch_idx == 0:
+                print(f"\n[Epoch {epoch} Diagnostics]")
+                print(f"  Mix mag range: [{mixture_mag.min():.4f}, {mixture_mag.max():.4f}]")
+                print(f"  Tgt mag range: [{target_mag.min():.4f}, {target_mag.max():.4f}]")
+                print(f"  Mix lin range: [{mixture_lin.min():.4f}, {mixture_lin.max():.4f}]")
+                print(f"  Tgt lin range: [{target_lin.min():.4f}, {target_lin.max():.4f}]")
+                print(f"  Target mask range: [{target_mask.min():.4f}, {target_mask.max():.4f}]")
+                print(f"  Pred mask range: [{predicted_mask.min():.4f}, {predicted_mask.max():.4f}]")
+            
+            if self.use_energy_weighted_loss:
+                # Weight per-bin by mixture energy in linear domain
+                weights = mixture_lin.detach()
+                weights = weights / (weights.mean() + 1e-8)
+                l1 = torch.abs(predicted_mask - target_mask)
+                loss = (weights * l1).sum() / (weights.sum() + 1e-8)
+            else:
+                loss = self.loss_fn(predicted_mask, target_mask)
             
             # Backward pass
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=1.0)
+            
+            # Log gradient magnitude on first batch of first epoch
+            if is_first_epoch and batch_idx == 0:
+                grad_magnitudes = []
+                for param in self.model.parameters():
+                    if param.grad is not None:
+                        grad_magnitudes.append(param.grad.abs().max().item())
+                if grad_magnitudes:
+                    print(f"  Grad max (pre-clip): {max(grad_magnitudes):.6f}")
+            
+            if self.grad_clip_max_norm is not None:
+                torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=self.grad_clip_max_norm)
+            
+            # Log gradient magnitude on first batch of first epoch (post-clip)
+            if is_first_epoch and batch_idx == 0 and self.grad_clip_max_norm is not None:
+                grad_magnitudes = []
+                for param in self.model.parameters():
+                    if param.grad is not None:
+                        grad_magnitudes.append(param.grad.abs().max().item())
+                if grad_magnitudes:
+                    print(f"  Grad max (post-clip): {max(grad_magnitudes):.6f}")
+            
             self.optimizer.step()
             
             total_loss += loss.item()
@@ -559,9 +638,11 @@ class ModelATrainer:
                 # Forward pass
                 predicted_mask = self.model(mixture_mag)
                 
-                # Compute loss
+                # Compute loss: convert log-compressed magnitudes back to linear for mask
+                mixture_lin = torch.expm1(mixture_mag)
+                target_lin = torch.expm1(target_mag)
                 target_mask = torch.clamp(
-                    target_mag / (mixture_mag + 1e-8),
+                    target_lin / (mixture_lin + 1e-8),
                     min=0.0,
                     max=1.0
                 )
@@ -591,11 +672,14 @@ class ModelATrainer:
         
         epoch_pbar = tqdm(range(num_epochs), desc='Epochs')
         for epoch in epoch_pbar:
-            train_loss = self.train_epoch()
+            train_loss = self.train_epoch(epoch=epoch)
             val_loss = self.validate()
             
             self.history['train_loss'].append(train_loss)
             self.history['val_loss'].append(val_loss)
+            
+            # Print epoch loss clearly
+            print(f"  Epoch {epoch+1:02d}/{num_epochs}: Train Loss {train_loss:.6f} | Val Loss {val_loss:.6f}")
             
             epoch_pbar.set_postfix({
                 'train_loss': f'{train_loss:.6f}',
@@ -671,7 +755,6 @@ class ModelAInference:
         """
         # Compute STFT
         mix_mag, mix_phase = self.stft_processor.waveform_to_magnitude_phase(mixture)
-        mix_mag = self.stft_processor.normalize_magnitude(mix_mag)
         
         # Store original dimensions for cropping later
         orig_freq, orig_time = mix_mag.shape
