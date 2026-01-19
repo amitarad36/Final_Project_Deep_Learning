@@ -1,6 +1,9 @@
-# Large datasets (MUSDB18 will be auto-downloaded)
-data/musdb18/
-data/curriculum_cache/
+
+data/
+!data/checkpoints/
+data/checkpoints/*
+!data/checkpoints/.gitkeep
+
 
 # Generated outputs
 outputs/
