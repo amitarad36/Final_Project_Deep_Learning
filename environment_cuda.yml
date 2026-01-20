@@ -1,0 +1,23 @@
+name: final-dl-cuda
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.10
+  - numpy
+  - matplotlib
+  - pip
+  - jupyter
+  - ipykernel
+  # - musdb  # Install with pip after environment creation
+  - librosa
+  - tqdm
+  # - soundfile  # Install with pip after environment creation
+  - scikit-learn
+  - pip:
+      - stempeg
+  - pytorch
+  - torchvision
+  - torchaudio
+  - pytorch-cuda=12.1
