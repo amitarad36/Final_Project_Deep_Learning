@@ -2,7 +2,7 @@ data/
 !data/checkpoints/
 data/checkpoints/*
 !data/checkpoints/.gitkeep
-
+checkpoints/*
 
 # Generated outputs
 outputs/
