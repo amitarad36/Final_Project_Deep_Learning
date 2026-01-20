@@ -1,4 +1,3 @@
-
 data/
 !data/checkpoints/
 data/checkpoints/*
@@ -30,6 +29,7 @@ __pycache__/
 .env
 venv/
 env/
+deep-music-cuda/
 
 # OS
 .DS_Store
