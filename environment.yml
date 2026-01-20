@@ -23,3 +23,9 @@ dependencies:
     - stempeg
     - tqdm
     - soundfile
+    - ipython
+    - ipykernel
+    - notebook
+    - ipywidgets
+    - ipython-genutils
+    - widgetsnbextension
