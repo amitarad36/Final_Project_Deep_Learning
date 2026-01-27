@@ -62,8 +62,26 @@ class UniversalTrainer:
         """
         self.model.train()
         total_loss = 0
-        from tqdm import tqdm
-        pbar = tqdm(self.train_loader, desc=f"Ep {epoch_idx} Training", leave=False)
+        # Use notebook tqdm if in notebook, else fallback to plain tqdm or print
+        def _in_notebook():
+            try:
+                from IPython import get_ipython
+                shell = get_ipython().__class__.__name__
+                if shell == 'ZMQInteractiveShell':
+                    return True  # Jupyter notebook or qtconsole
+                else:
+                    return False  # Other type (likely terminal)
+            except Exception:
+                return False
+
+        if _in_notebook():
+            print("[DEBUG] Using tqdm.notebook for progress bars.")
+            from tqdm.notebook import tqdm as tqdm_bar
+        else:
+            print("[DEBUG] Using plain tqdm for progress bars.")
+            from tqdm import tqdm as tqdm_bar
+
+        pbar = tqdm_bar(self.train_loader, desc=f"Ep {epoch_idx} Training", leave=False)
         for batch in pbar:
             mix = batch['mix'].to(self.device)
             tgt = batch['tgt'].to(self.device)
@@ -127,9 +145,26 @@ class UniversalTrainer:
         Trains the model for a given number of epochs and saves the best checkpoint.
         Returns training history.
         """
-        from tqdm import tqdm
+        def _in_notebook():
+            try:
+                from IPython import get_ipython
+                shell = get_ipython().__class__.__name__
+                if shell == 'ZMQInteractiveShell':
+                    return True
+                else:
+                    return False
+            except Exception:
+                return False
+
+        if _in_notebook():
+            print("[DEBUG] Using tqdm.notebook for progress bars.")
+            from tqdm.notebook import tqdm as tqdm_bar
+        else:
+            print("[DEBUG] Using plain tqdm for progress bars.")
+            from tqdm import tqdm as tqdm_bar
+
         epochs_no_improve = 0
-        global_pbar = tqdm(range(num_epochs), desc="Total Progress")
+        global_pbar = tqdm_bar(range(num_epochs), desc="Total Progress")
         for epoch in global_pbar:
             train_loss = self.train_epoch(epoch + 1)
             val_loss = self.validate()
