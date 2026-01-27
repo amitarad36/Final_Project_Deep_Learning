@@ -4,6 +4,9 @@ data/checkpoints/*
 !data/checkpoints/.gitkeep
 checkpoints/*
 
+#for colab
+main.ipynb
+
 # Generated outputs
 outputs/
 
