@@ -174,6 +174,8 @@ class UniversalTrainer:
             epoch_dir = os.path.join(base_dir, f"{run_name}_epochs")
             os.makedirs(epoch_dir, exist_ok=True)
 
+        best_epoch = 0
+        best_train_loss = None
         for epoch in global_pbar:
             train_loss = self.train_epoch(epoch + 1)
             val_loss = self.validate()
@@ -199,12 +201,22 @@ class UniversalTrainer:
                     print(f"[WARN] Could not write epoch file {epoch_file}: {e}")
             if val_loss < self.best_val_loss:
                 self.best_val_loss = val_loss
+                best_epoch = epoch + 1
+                best_train_loss = train_loss
                 epochs_no_improve = 0
                 if save_path is not None:
                     torch.save({
                         'model_state_dict': self.model.state_dict(),
                         'history': self.history
                     }, save_path)
+                # Write/update best_epoch.txt
+                if epoch_dir is not None:
+                    try:
+                        best_file = os.path.join(epoch_dir, "best_epoch.txt")
+                        with open(best_file, 'w') as bf:
+                            bf.write(f"Best Epoch: {best_epoch}\nTrain Loss: {best_train_loss:.4f}\nVal Loss: {self.best_val_loss:.4f}\n")
+                    except Exception as e:
+                        print(f"[WARN] Could not write best_epoch.txt: {e}")
             else:
                 epochs_no_improve += 1
                 if epochs_no_improve >= self.patience:
