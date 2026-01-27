@@ -192,7 +192,7 @@ class Separator:
                 return est.squeeze().cpu().numpy()
 
 # ==============================================================================
-# Metrics Calculation
+# Metrics Calculation (use this in notebooks!!!)
 # ==============================================================================
 def calculate_metrics(reference, estimate, sr=22050):
     """
@@ -406,10 +406,10 @@ def prepare_curriculum_cache(mus, cache_dir="../data/curriculum", sr=22050):
             resampled = librosa.resample(audio, orig_sr=track.rate, target_sr=sr)
             stems[name] = np.mean(resampled, axis=0).astype(np.float32)
         # Stage 1: Vocals + Other -> Other
-        np.save(root / "stage1/mixture" / f"{i:03d}.npy", stems['vocals'] + stems['other'])
+        np.save(root / "stage1/mixture" / f"{i:03d}.npy", 0.7*stems['vocals'] + 0.3*stems['other']) # Weighted mix
         np.save(root / "stage1/target" / f"{i:03d}.npy", stems['other'])
         # Stage 2: Full Mix -> Other
-        s2_mix = stems['vocals'] + stems['other'] + stems['drums'] + stems['bass']
+        s2_mix = stems['mixture']
         np.save(root / "stage2/mixture" / f"{i:03d}.npy", s2_mix)
         np.save(root / "stage2/target" / f"{i:03d}.npy", stems['other'])
     print("\nCache generation complete!")
