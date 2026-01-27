@@ -409,7 +409,7 @@ def prepare_curriculum_cache(mus, cache_dir="../data/curriculum", sr=22050):
         np.save(root / "stage1/mixture" / f"{i:03d}.npy", 0.7*stems['vocals'] + 0.3*stems['other']) # Weighted mix
         np.save(root / "stage1/target" / f"{i:03d}.npy", stems['other'])
         # Stage 2: Full Mix -> Other
-        s2_mix = stems['mixture']
+        s2_mix = sum(stems[stem] for stem in stems)
         np.save(root / "stage2/mixture" / f"{i:03d}.npy", s2_mix)
         np.save(root / "stage2/target" / f"{i:03d}.npy", stems['other'])
     print("\nCache generation complete!")
