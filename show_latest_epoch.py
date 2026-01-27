@@ -6,6 +6,7 @@ def print_latest_and_best(epoch_dir):
     epoch_files = sorted(glob.glob(os.path.join(epoch_dir, 'epoch_*.txt')))
     if not epoch_files:
         print(f"No epoch files found in: {epoch_dir}")
+        print("\n")
     else:
         latest_file = epoch_files[-1]
         print(f"Latest epoch file: {latest_file}")
@@ -19,6 +20,7 @@ def print_latest_and_best(epoch_dir):
             print(f.read())
     else:
         print(f"No best_epoch.txt found in: {epoch_dir}")
+        print("\n")
 
 if __name__ == "__main__":
     # Overfit
