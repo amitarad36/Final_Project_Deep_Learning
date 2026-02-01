@@ -8,6 +8,24 @@ from IPython.display import Audio, display
 import librosa
 
 # ===============================================================================
+# CHECKPOINT UTILITIES
+# ===============================================================================
+def check_checkpoint(checkpoint_path, checkpoint_name="Checkpoint"):
+    """
+    Check if a checkpoint exists and print status.
+    Returns True if checkpoint exists, False otherwise.
+    """
+    checkpoint_path = Path(checkpoint_path)
+    if checkpoint_path.exists():
+        print(f"✅ {checkpoint_name} found: {checkpoint_path}")
+        print(f"   Loading existing checkpoint instead of retraining.")
+        return True
+    else:
+        print(f"⏳ {checkpoint_name} not found: {checkpoint_path}")
+        print(f"   Training will start...")
+        return False
+
+# ===============================================================================
 # TRAIN/LOAD STAGE HELPER
 # ===============================================================================
 def train_stage(mix_files, tgt_files, model, processor, batch_size, num_epochs, patience, learning_rate, ckpt_path, device):
@@ -410,6 +428,99 @@ class StandardDataset(Dataset):
             'tgt': torch.tensor(t, dtype=torch.float32)
         }
 
+# Chunked dataset for fixed-length segments with overlap
+class ChunkedDataset(Dataset):
+    """
+    Splits variable-length audio files into fixed-length chunks with overlap.
+    Useful for training on consistent segment sizes (e.g., 1 second).
+    """
+    def __init__(self, mix_files, tgt_files, chunk_duration=1.0, overlap=0.3, sr=22050):
+        """
+        Args:
+            mix_files: List of mixture file paths
+            tgt_files: List of target file paths
+            chunk_duration: Length of each chunk in seconds
+            overlap: Overlap between chunks in seconds
+            sr: Sample rate
+        """
+        self.mix_files = list(mix_files)
+        self.tgt_files = list(tgt_files)
+        self.chunk_size = int(chunk_duration * sr)
+        self.hop_size = int((chunk_duration - overlap) * sr)
+        self.sr = sr
+        
+        # Pre-compute chunk indices
+        self.chunks = []
+        for file_idx, (mix_path, tgt_path) in enumerate(zip(self.mix_files, self.tgt_files)):
+            # Get file length
+            file_length = np.load(mix_path, mmap_mode='r').shape[0]
+            # Calculate chunk starts
+            starts = list(range(0, file_length - self.chunk_size + 1, self.hop_size))
+            for start in starts:
+                self.chunks.append((file_idx, start))
+    
+    def __len__(self):
+        return len(self.chunks)
+    
+    def __getitem__(self, idx):
+        """
+        Returns a chunk of audio as tensors.
+        """
+        file_idx, start = self.chunks[idx]
+        end = start + self.chunk_size
+        
+        mix_full = np.load(self.mix_files[file_idx])
+        tgt_full = np.load(self.tgt_files[file_idx])
+        
+        mix_chunk = mix_full[start:end]
+        tgt_chunk = tgt_full[start:end]
+        
+        return {
+            'mix': torch.tensor(mix_chunk, dtype=torch.float32),
+            'tgt': torch.tensor(tgt_chunk, dtype=torch.float32)
+        }
+
+# ==============================================================================
+# CONFIGURATION FUNCTIONS
+# ==============================================================================
+def get_model_a_config():
+    """
+    Returns Model A (Time-Frequency Domain U-Net) architecture configuration.
+    """
+    return {
+        'n_fft': 2048,
+        'hop_length': 512,
+        'encoder_channels': [1, 16, 32, 64, 128, 256],
+        'decoder_channels': [256, 128, 64, 32, 16, 1],
+        'use_batch_norm': True
+    }
+
+def get_training_config():
+    """
+    Returns general training configuration for Model A.
+    """
+    return {
+        'batch_size': 16,
+        'learning_rate': 1e-4,
+        'num_epochs': 50,
+        'chunk_duration': 1.0,  # 1 second chunks
+        'chunk_overlap': 0.3,   # 0.3 second overlap
+        'device': 'cuda' if torch.cuda.is_available() else 'cpu'
+    }
+
+def get_overfit_config():
+    """
+    Returns configuration for overfitting test on 1 song.
+    """
+    return {
+        'batch_size': 8,
+        'learning_rate': 1e-3,
+        'num_epochs': 100,
+        'chunk_duration': 1.0,
+        'chunk_overlap': 0.3,
+        'device': 'cuda' if torch.cuda.is_available() else 'cpu'
+    }
+
 # ==============================================================================
 # HELPER FUNCTIONS
 # ==============================================================================
@@ -456,20 +567,315 @@ def plot_text_graph(history, title):
         print(f"Ep {i+1:02d}: {loss:.4f} | {'█' * width}")
 
 # ==============================================================================
+# NOTEBOOK COMPACT HELPERS
+# ==============================================================================
+def get_curriculum_file_lists(cache_dir="../data"):
+    """
+    Returns sorted file lists for stage1 and stage2 (mixture/target).
+    """
+    data_root = Path(cache_dir)
+    s1_mix_path = data_root / "stage1" / "mixture"
+    s1_tgt_path = data_root / "stage1" / "target"
+    s2_mix_path = data_root / "stage2" / "mixture"
+    s2_tgt_path = data_root / "stage2" / "target"
+
+    mix_files_stage1 = sorted(list(s1_mix_path.glob("*.npy")))
+    tgt_files_stage1 = sorted(list(s1_tgt_path.glob("*.npy")))
+    mix_files_stage2 = sorted(list(s2_mix_path.glob("*.npy")))
+    tgt_files_stage2 = sorted(list(s2_tgt_path.glob("*.npy")))
+
+    return mix_files_stage1, tgt_files_stage1, mix_files_stage2, tgt_files_stage2
+
+
+def run_overfit_1song(
+    overfit_model,
+    overfit_processor,
+    overfit_optimizer,
+    overfit_loss_fn,
+    overfit_config,
+    cache_dir="../data",
+    save_path="../checkpoints/debug_overfit_1song.pth",
+    device="cpu",
+):
+    """
+    Runs (or loads) an overfit sanity check on 1 random song.
+    Uses ChunkedDataset for 1-second segments with overlap.
+    Returns training history.
+    """
+    import random
+    from torch.utils.data import DataLoader
+
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    s1_root = Path(cache_dir) / "stage1"
+    all_mix_files = sorted(list((s1_root / "mixture").glob("*.npy")))
+    all_tgt_files = sorted(list((s1_root / "target").glob("*.npy")))
+
+    if len(all_mix_files) < 1 or len(all_tgt_files) < 1:
+        raise ValueError("Not enough data for overfit test. Please check your dataset.")
+
+    # Select 1 random song
+    idx = random.randint(0, len(all_mix_files) - 1)
+    mix_files = [all_mix_files[idx]]
+    tgt_files = [all_tgt_files[idx]]
+
+    # Use ChunkedDataset for 1-sec segments with overlap
+    tiny_ds = ChunkedDataset(
+        mix_files, tgt_files,
+        chunk_duration=overfit_config.get('chunk_duration', 1.0),
+        overlap=overfit_config.get('chunk_overlap', 0.3)
+    )
+    tiny_loader = DataLoader(tiny_ds, batch_size=overfit_config['batch_size'], shuffle=False)
+
+    trainer_overfit = UniversalTrainer(
+        model=overfit_model,
+        train_loader=tiny_loader,
+        val_loader=tiny_loader,
+        processor=overfit_processor,
+        optimizer=overfit_optimizer,
+        loss_fn=overfit_loss_fn,
+        device=device,
+        patience=overfit_config.get('patience', 10)
+    )
+
+    history = {}
+    if not os.path.exists(save_path):
+        print(f"   Training from scratch on 1 random song (#{idx})...")
+        history = trainer_overfit.train(num_epochs=overfit_config['num_epochs'], save_path=save_path)
+    else:
+        print(f"✓ Found Checkpoint: {save_path}")
+        ckpt = torch.load(save_path, map_location=device)
+        overfit_model.load_state_dict(ckpt['model_state_dict'])
+        history = ckpt.get('history', {})
+
+    return history
+
+
+def run_full_training(
+    model,
+    processor,
+    optimizer,
+    loss_fn,
+    train_config,
+    cache_dir="../data",
+    log_file_path=None,
+    save_path_stage1="../checkpoints/full_stage1.pth",
+    save_path_stage2="../checkpoints/full_stage2.pth",
+    device="cpu",
+):
+    """
+    Runs (or loads) full training for stage1 and stage2.
+    Uses ChunkedDataset for 1-second segments with overlap.
+    Returns histories for both stages.
+    """
+    from torch.utils.data import DataLoader
+
+    # Stage 1
+    print("\n--- Stage 1: Vocals + Other -> Other ---")
+    s1_root = Path(cache_dir) / "stage1"
+    s1_mix = sorted(list((s1_root / "mixture").glob("*.npy")))
+    s1_tgt = sorted(list((s1_root / "target").glob("*.npy")))
+
+    split_s1 = int(len(s1_mix) * 0.8)
+    train_ds1 = ChunkedDataset(
+        s1_mix[:split_s1], s1_tgt[:split_s1],
+        chunk_duration=train_config.get('chunk_duration', 1.0),
+        overlap=train_config.get('chunk_overlap', 0.3)
+    )
+    val_ds1 = ChunkedDataset(
+        s1_mix[split_s1:], s1_tgt[split_s1:],
+        chunk_duration=train_config.get('chunk_duration', 1.0),
+        overlap=train_config.get('chunk_overlap', 0.3)
+    )
+
+    if len(train_ds1) < 1 or len(val_ds1) < 1:
+        raise ValueError("Not enough data for full training Stage 1. Please check your dataset.")
+
+    train_loader1 = DataLoader(train_ds1, batch_size=train_config['batch_size'], shuffle=True)
+    val_loader1 = DataLoader(val_ds1, batch_size=train_config['batch_size'], shuffle=False)
+
+    trainer_s1 = UniversalTrainer(
+        model=model,
+        train_loader=train_loader1,
+        val_loader=val_loader1,
+        processor=processor,
+        optimizer=optimizer,
+        loss_fn=loss_fn,
+        device=device,
+        patience=train_config.get('patience', 10)
+    )
+
+    hist_s1 = {}
+    if not os.path.exists(save_path_stage1):
+        hist_s1 = trainer_s1.train(num_epochs=train_config['num_epochs'], save_path=save_path_stage1, log_file_path=log_file_path)
+    else:
+        print(f"✓ Found Checkpoint: {save_path_stage1}")
+        ckpt = torch.load(save_path_stage1, map_location=device)
+        model.load_state_dict(ckpt['model_state_dict'])
+        hist_s1 = ckpt.get('history', {})
+
+    # Stage 2
+    print("\n--- Stage 2: Full Mix -> Other ---")
+    s2_root = Path(cache_dir) / "stage2"
+    s2_mix = sorted(list((s2_root / "mixture").glob("*.npy")))
+    s2_tgt = sorted(list((s2_root / "target").glob("*.npy")))
+
+    split_s2 = int(len(s2_mix) * 0.8)
+    train_ds2 = ChunkedDataset(
+        s2_mix[:split_s2], s2_tgt[:split_s2],
+        chunk_duration=train_config.get('chunk_duration', 1.0),
+        overlap=train_config.get('chunk_overlap', 0.3)
+    )
+    val_ds2 = ChunkedDataset(
+        s2_mix[split_s2:], s2_tgt[split_s2:],
+        chunk_duration=train_config.get('chunk_duration', 1.0),
+        overlap=train_config.get('chunk_overlap', 0.3)
+    )
+
+    if len(train_ds2) < 1 or len(val_ds2) < 1:
+        raise ValueError("Not enough data for full training Stage 2. Please check your dataset.")
+
+    train_loader2 = DataLoader(train_ds2, batch_size=train_config['batch_size'], shuffle=True)
+    val_loader2 = DataLoader(val_ds2, batch_size=train_config['batch_size'], shuffle=False)
+
+    for param_group in optimizer.param_groups:
+        param_group['lr'] = train_config['learning_rate'] * 0.1
+    print(f"✓ Optimizer LR reduced to {train_config['learning_rate'] * 0.1}")
+
+    trainer_s2 = UniversalTrainer(
+        model=model,
+        train_loader=train_loader2,
+        val_loader=val_loader2,
+        processor=processor,
+        optimizer=optimizer,
+        loss_fn=loss_fn,
+        device=device,
+        patience=train_config.get('patience', 10)
+    )
+
+    hist_s2 = {}
+    if not os.path.exists(save_path_stage2):
+        hist_s2 = trainer_s2.train(num_epochs=train_config['num_epochs'], save_path=save_path_stage2, log_file_path=log_file_path)
+    else:
+        print(f"✓ Found Checkpoint: {save_path_stage2}")
+        ckpt = torch.load(save_path_stage2, map_location=device)
+        model.load_state_dict(ckpt['model_state_dict'])
+        hist_s2 = ckpt.get('history', {})
+
+    return hist_s1, hist_s2
+
+
+def plot_loss_from_checkpoint(ckpt_path, title="Loss Curves from Checkpoint"):
+    """
+    Loads a checkpoint and plots loss curves if history is present.
+    """
+    ckpt = torch.load(ckpt_path, map_location='cpu')
+    if 'history' in ckpt:
+        history = ckpt['history']
+        plt.figure(figsize=(10, 4))
+        plt.plot(history['train_loss'], label='Train Loss')
+        plt.plot(history['val_loss'], label='Val Loss')
+        plt.title(title)
+        plt.xlabel("Epoch")
+        plt.ylabel("Loss")
+        plt.legend()
+        plt.show()
+    else:
+        print("No loss history found in checkpoint.")
+
+
+def demo_separation_sample(
+    model,
+    processor,
+    cache_dir="../data",
+    stage="stage1",
+    song_num=12,
+    duration=6,
+    sr=22050,
+    device="cpu",
+    play_audio_output=True,
+):
+    """
+    Visualizes and (optionally) plays mixture/target/predicted audio for one sample.
+    """
+    data_root = Path(cache_dir)
+    mix_path = data_root / stage / "mixture"
+    tgt_path = data_root / stage / "target"
+
+    mix_files = sorted(list(mix_path.glob("*.npy")))
+    tgt_files = sorted(list(tgt_path.glob("*.npy")))
+
+    n_samples = sr * duration
+    mix_wav = np.load(mix_files[song_num])[:n_samples]
+    tgt_wav = np.load(tgt_files[song_num])[:n_samples]
+
+    mix_mag, mix_phase = processor.to_spectrogram(torch.tensor(mix_wav))
+    tgt_mag, tgt_phase = processor.to_spectrogram(torch.tensor(tgt_wav))
+    show_spectrogram(mix_mag, title="Mixture Spectrogram (6 sec)")
+    show_spectrogram(tgt_mag, title="Target Spectrogram (6 sec)")
+
+    model.eval()
+    with torch.no_grad():
+        if mix_mag.dim() == 2:
+            mix_mag_in = mix_mag.unsqueeze(0).unsqueeze(0).to(device)
+        elif mix_mag.dim() == 3:
+            mix_mag_in = mix_mag.unsqueeze(1).to(device)
+        elif mix_mag.dim() == 4:
+            mix_mag_in = mix_mag.to(device)
+        else:
+            raise ValueError(f"mix_mag must be 2D, 3D, or 4D, got shape {mix_mag.shape}")
+
+        mask = model(mix_mag_in)
+        if mask.shape != mix_mag_in.shape:
+            mask = mask[:, :, :mix_mag_in.shape[2], :mix_mag_in.shape[3]]
+        est_mag = mask.squeeze(0).squeeze(0) * mix_mag.to(device)
+        est_wav = processor.to_waveform(est_mag.cpu(), mix_phase.cpu())
+
+    show_spectrogram(est_mag.cpu(), title="Predicted Spectrogram (6 sec)")
+
+    if play_audio_output:
+        play_audio(mix_wav, sr=sr, title="Mixture Audio (6 sec)")
+        play_audio(tgt_wav, sr=sr, title="Target Audio (6 sec)")
+        play_audio(est_wav, sr=sr, title="Predicted Audio (6 sec)")
+
+    return {
+        "mix_wav": mix_wav,
+        "tgt_wav": tgt_wav,
+        "est_wav": est_wav,
+        "mix_mag": mix_mag,
+        "tgt_mag": tgt_mag,
+        "est_mag": est_mag,
+        "mix_phase": mix_phase,
+        "tgt_phase": tgt_phase,
+    }
+
+# ==============================================================================
 # CACHING LOGIC
 # ==============================================================================
-def prepare_curriculum_cache(mus, cache_dir="../data/curriculum", sr=22050):
+def prepare_curriculum_cache(mus, cache_dir="../data", sr=22050, force_rebuild=False):
     """
     Generates and caches curriculum data from musdb tracks.
+    Uses realistic mixture weights based on typical music production levels.
+    Stage 1: Vocals + Other -> Other (simpler task)
+    Stage 2: Full Mix -> Other (harder task with all stems)
     """
     root = Path(cache_dir)
-    if root.exists() and len(list(root.glob("**/*.npy"))) > 0:
+    if not force_rebuild and root.exists() and len(list(root.glob("**/*.npy"))) > 0:
         print(f"Cache found at {root}. Skipping generation.")
         return
     print(f"Generating Curriculum Cache at {root}...")
     for stage in ["stage1", "stage2"]:
         for type in ["mixture", "target"]:
             (root / stage / type).mkdir(parents=True, exist_ok=True)
+    
+    # Realistic mixture weights (normalized to sum=1.0)
+    # Based on typical music production levels
+    weights = {
+        'vocals': 0.35,   # Vocals usually prominent
+        'drums': 0.30,    # Drums have strong presence
+        'bass': 0.20,     # Bass provides foundation
+        'other': 0.15     # Other instruments fill space
+    }
+    
     for i, track in enumerate(mus.tracks):
         print(f"Processing: {track.title}...", end="\r")
         stems = {}
@@ -477,11 +883,17 @@ def prepare_curriculum_cache(mus, cache_dir="../data/curriculum", sr=22050):
             audio = stem_obj.audio.T
             resampled = librosa.resample(audio, orig_sr=track.rate, target_sr=sr)
             stems[name] = np.mean(resampled, axis=0).astype(np.float32)
-        # Stage 1: Vocals + Other -> Other
-        np.save(root / "stage1/mixture" / f"{i:03d}.npy", 0.7*stems['vocals'] + 0.3*stems['other']) # Weighted mix
+        
+        # Stage 1: Vocals + Other -> Other (simpler curriculum step)
+        s1_mix = weights['vocals'] * stems['vocals'] + weights['other'] * stems['other']
+        # Normalize to prevent clipping
+        s1_mix = s1_mix / (weights['vocals'] + weights['other'])
+        np.save(root / "stage1/mixture" / f"{i:03d}.npy", s1_mix)
         np.save(root / "stage1/target" / f"{i:03d}.npy", stems['other'])
-        # Stage 2: Full Mix -> Other
-        s2_mix = sum(stems[stem] for stem in stems)
+        
+        # Stage 2: Full Mix -> Other (realistic full mix)
+        # Only use stems that exist in the weights dict
+        s2_mix = sum(weights[stem] * stems[stem] for stem in stems if stem in weights)
         np.save(root / "stage2/mixture" / f"{i:03d}.npy", s2_mix)
         np.save(root / "stage2/target" / f"{i:03d}.npy", stems['other'])
     print("\nCache generation complete!")

@@ -2,9 +2,38 @@
 
 ## Music Source Separation with Deep Learning
 
-This project implements two deep learning architectures for music source separation:
-- **Model A**: Frequency-domain U-Net operating on magnitude spectrograms
-- **Model B**: Time-domain Demucs-style architecture
+This project implements deep learning architectures for music source separation using curriculum learning.
+
+### Quick Start
+
+**All you need: `local_main.ipynb`** - Single notebook for the entire project!
+
+**Two modes:**
+1. **Inference Mode** (`DOWNLOAD_DATA = False`): Use pre-trained checkpoints, no data download
+2. **Training Mode** (`DOWNLOAD_DATA = True`): Download MUSDB18 (~4GB) and train from scratch
+
+### Project Structure
+
+```
+Final_Project_Deep_Learning/
+├── local_main.ipynb          # 👈 MAIN NOTEBOOK - Run this!
+├── models/
+│   ├── model_A.py            # Time-Frequency U-Net
+│   ├── model_B1.py           # (Future)
+│   ├── model_B2.py           # (Future)
+│   └── utils.py              # All utilities, datasets, training
+├── checkpoints/              # Pre-trained models
+├── data/                     # Generated training data (if downloaded)
+└── README.md
+```
+
+## Features
+
+✅ **Realistic Mixture Weights** - Vocals: 35%, Drums: 30%, Bass: 20%, Other: 15%
+✅ **ChunkedDataset** - 1-second segments with 30% overlap for consistent training
+✅ **Curriculum Learning** - Stage 1 (Vocals+Other→Other), Stage 2 (Full Mix→Other)
+✅ **Centralized Configuration** - All hyperparameters in `models/utils.py`
+✅ **Optional Data Download** - Choose inference-only or full training mode
 
 ## Environment Setup
 
