@@ -7,6 +7,14 @@ import matplotlib.pyplot as plt
 from IPython.display import Audio, display
 import librosa
 
+# Configure matplotlib for Jupyter/Colab environment
+try:
+    from IPython import get_ipython
+    if get_ipython() is not None:
+        get_ipython().run_line_magic('matplotlib', 'inline')
+except:
+    pass
+
 # ===============================================================================
 # CHECKPOINT UTILITIES
 # ===============================================================================
@@ -508,18 +516,32 @@ def get_training_config():
         'device': 'cuda' if torch.cuda.is_available() else 'cpu'
     }
 
-def get_overfit_config():
+def get_overfit_config(chunk_duration=4.0, num_layers=4):
     """
-    Overfit configuration. Adjust these in notebook before training.
+    Overfit configuration with flexibility for different model sizes.
+    
+    Recommended combinations:
+    - chunk_duration=4.0, num_layers=4   (lightweight, safe)
+    - chunk_duration=6.0, num_layers=5   (medium capacity)
+    - chunk_duration=8.0, num_layers=6   (large capacity)
+    - chunk_duration=10.0, num_layers=7  (very large capacity)
+    
+    Args:
+        chunk_duration: Audio chunk length in seconds (default 4.0)
+        num_layers: Number of U-Net layers (default 4)
+    
+    Returns:
+        Config dict with all training parameters
     """
     return {
-        'batch_size': 2,
+        'batch_size': 1,
         'learning_rate': 1e-3,
         'num_epochs': 100,
-        'chunk_duration': 4.0,
+        'chunk_duration': chunk_duration,
         'chunk_overlap': 0.3,
         'patience': 20,
-        'device': 'cuda' if torch.cuda.is_available() else 'cpu'
+        'device': 'cuda' if torch.cuda.is_available() else 'cpu',
+        'num_layers': num_layers
     }
 
 # ==============================================================================
@@ -769,20 +791,69 @@ def run_full_training(
 def plot_loss_from_checkpoint(ckpt_path, title="Loss Curves from Checkpoint"):
     """
     Loads a checkpoint and plots loss curves if history is present.
+    Also checks for epoch folder to get complete training history.
+    Works reliably on Colab with GPU.
     """
-    ckpt = torch.load(ckpt_path, map_location='cpu')
-    if 'history' in ckpt:
-        history = ckpt['history']
-        plt.figure(figsize=(10, 4))
-        plt.plot(history['train_loss'], label='Train Loss')
-        plt.plot(history['val_loss'], label='Val Loss')
-        plt.title(title)
-        plt.xlabel("Epoch")
-        plt.ylabel("Loss")
-        plt.legend()
-        plt.show()
-    else:
-        print("No loss history found in checkpoint.")
+    try:
+        ckpt_path = Path(ckpt_path)
+        train_losses = []
+        val_losses = []
+        
+        # First, try to read from epoch files (more complete history)
+        epoch_folder = ckpt_path.parent / f"{ckpt_path.stem}_epochs"
+        if epoch_folder.exists():
+            print(f"📁 Reading from epoch folder: {epoch_folder.name}")
+            epoch_files = sorted(epoch_folder.glob("epoch_*.txt"))
+            
+            for epoch_file in epoch_files:
+                try:
+                    with open(epoch_file, 'r') as f:
+                        content = f.read()
+                        # Parse loss values from file
+                        import re
+                        train_match = re.search(r'Train Loss[:\s=]+([\d.]+)', content)
+                        val_match = re.search(r'Val Loss[:\s=]+([\d.]+)', content)
+                        if train_match and val_match:
+                            train_losses.append(float(train_match.group(1)))
+                            val_losses.append(float(val_match.group(1)))
+                except Exception as e:
+                    print(f"⚠️  Error reading {epoch_file.name}: {e}")
+                    continue
+        
+        # Fallback to checkpoint history if no epoch files found
+        if not train_losses:
+            ckpt = torch.load(ckpt_path, map_location='cpu')
+            if 'history' in ckpt:
+                history = ckpt['history']
+                train_losses = history.get('train_loss', [])
+                val_losses = history.get('val_loss', [])
+        
+        # Plot if we have data
+        if train_losses:
+            print(f"📊 Plotting {len(train_losses)} epochs")
+            
+            plt.figure(figsize=(12, 6), dpi=100)
+            epochs = range(1, len(train_losses) + 1)
+            
+            plt.plot(epochs, train_losses, 'o-', label='Train Loss', linewidth=2, markersize=6)
+            if val_losses:
+                plt.plot(epochs, val_losses, 's--', label='Val Loss', linewidth=2, markersize=6)
+            
+            plt.title(title, fontsize=14, fontweight='bold')
+            plt.xlabel("Epoch", fontsize=12)
+            plt.ylabel("Loss", fontsize=12)
+            plt.legend(fontsize=11, loc='best')
+            plt.grid(True, alpha=0.3)
+            plt.tight_layout()
+            
+            plt.show()
+            plt.close('all')
+        else:
+            print("⚠️  No training data found in checkpoint or epoch files.")
+    except Exception as e:
+        print(f"❌ Error plotting checkpoint: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 def demo_separation_sample(
@@ -919,28 +990,34 @@ def show_spectrogram(tensor, title="Spectrogram"):
 def plot_loss_history(history, title="Training Loss"):
     """
     Safely plots training history without crashing the kernel.
+    Works reliably on Colab with GPU.
     """
     # 1. Safety Check: Is there data?
     if not history or 'train_loss' not in history or len(history['train_loss']) == 0:
-        print(f"No training data found for {title}")
+        print(f"⚠️  No training data found for {title}")
         return
 
-    # 2. Create Figure explicitly (avoids interference with previous plots)
-    plt.figure(figsize=(10, 5))
-    
-    # 3. Plot Data
-    plt.plot(history['train_loss'], label='Train Loss', linewidth=2)
-    if 'val_loss' in history and len(history['val_loss']) > 0:
-        plt.plot(history['val_loss'], label='Val Loss', linewidth=2, linestyle='--')
+    try:
+        # 2. Create Figure explicitly
+        plt.figure(figsize=(10, 5), dpi=100)
+        
+        # 3. Plot Data
+        plt.plot(history['train_loss'], label='Train Loss', linewidth=2, marker='o', markersize=4)
+        if 'val_loss' in history and len(history['val_loss']) > 0:
+            plt.plot(history['val_loss'], label='Val Loss', linewidth=2, marker='s', markersize=4, linestyle='--')
 
-    # 4. Styling
-    plt.title(title)
-    plt.xlabel("Epoch")
-    plt.ylabel("Loss")
-    plt.legend()
-    plt.grid(True, alpha=0.3)
-    
-    # 5. Render and Close
-    plt.tight_layout()
-    plt.show()  # Renders the image in the notebook
-    plt.close() # Frees memory immediately
+        # 4. Styling
+        plt.title(title, fontsize=13, fontweight='bold')
+        plt.xlabel("Epoch", fontsize=11)
+        plt.ylabel("Loss", fontsize=11)
+        plt.legend(fontsize=10, loc='best')
+        plt.grid(True, alpha=0.3)
+        
+        # 5. Render and Close
+        plt.tight_layout()
+        plt.show()
+        plt.close('all')  # Close all figures to free memory
+    except Exception as e:
+        print(f"❌ Error plotting history: {e}")
+        import traceback
+        traceback.print_exc()
