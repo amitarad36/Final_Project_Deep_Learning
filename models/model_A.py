@@ -70,6 +70,7 @@ class TimeFrequencyDomainUNet(nn.Module):
     """
     def __init__(self, in_channels=1, out_channels=1, base_filters=32, num_layers=4, batchnorm=True, dropout=0.0):
         super().__init__()
+        self.num_layers = num_layers
         self.encoders = nn.ModuleList()
         self.decoders = nn.ModuleList()
         for i in range(num_layers):
@@ -88,8 +89,9 @@ class TimeFrequencyDomainUNet(nn.Module):
 
     def forward(self, x):
         _, _, h, w = x.shape
-        pad_h = (16 - (h % 16)) % 16
-        pad_w = (16 - (w % 16)) % 16
+        multiple = 2 ** self.num_layers
+        pad_h = (multiple - (h % multiple)) % multiple
+        pad_w = (multiple - (w % multiple)) % multiple
         if pad_h > 0 or pad_w > 0:
             x = torch.nn.functional.pad(x, (0, pad_w, 0, pad_h))
         skips = []
@@ -100,6 +102,7 @@ class TimeFrequencyDomainUNet(nn.Module):
         x = self.bottleneck(x)
         for dec, skip in zip(self.decoders, reversed(skips)):
             x = dec(x, skip)
-        return self.sigmoid(self.final_conv(x))
+        x = self.sigmoid(self.final_conv(x))
+        return x[:, :, :h, :w]
     
     
