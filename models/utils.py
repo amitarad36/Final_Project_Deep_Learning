@@ -101,10 +101,8 @@ class UniversalTrainer:
                 return False
 
         if _in_notebook():
-            print("[DEBUG] Using tqdm.notebook for progress bars.")
             from tqdm.notebook import tqdm as tqdm_bar
         else:
-            print("[DEBUG] Using plain tqdm for progress bars.")
             from tqdm import tqdm as tqdm_bar
 
         pbar = tqdm_bar(self.train_loader, desc=f"Ep {epoch_idx} Training", leave=False)
@@ -183,10 +181,8 @@ class UniversalTrainer:
                 return False
 
         if _in_notebook():
-            print("[DEBUG] Using tqdm.notebook for progress bars.")
             from tqdm.notebook import tqdm as tqdm_bar
         else:
-            print("[DEBUG] Using plain tqdm for progress bars.")
             from tqdm import tqdm as tqdm_bar
 
         epochs_no_improve = 0
@@ -665,7 +661,7 @@ def run_overfit_1song(
         chunk_duration=chunk_dur,
         overlap=overfit_config.get('chunk_overlap', 0.3)
     )
-    print(f"   Song #{idx}: {len(tiny_ds)} chunks ({chunk_dur}s each)")
+    print(f"   Chunk file #{idx} (1 file): {len(tiny_ds)} sub-chunks ({chunk_dur}s each)")
     tiny_loader = DataLoader(tiny_ds, batch_size=overfit_config['batch_size'], shuffle=False)
 
     trainer_overfit = UniversalTrainer(
