@@ -508,19 +508,13 @@ def get_training_config():
         'learning_rate': 1e-4,
         'num_epochs': 50,
         'chunk_duration': 1.0,  # 1 second chunks
-        'chunk_overlap': 0.3,   # 0.3 second overlap
+        'chunk_overlap': 0.5,   # 0.5 second overlap (50%)
         'device': 'cuda' if torch.cuda.is_available() else 'cpu'
     }
 
 def get_overfit_config(chunk_duration=4.0, num_layers=4):
     """
     Overfit configuration with flexibility for different model sizes.
-    
-    Recommended combinations:
-    - chunk_duration=4.0, num_layers=4   (lightweight, safe)
-    - chunk_duration=6.0, num_layers=5   (medium capacity)
-    - chunk_duration=8.0, num_layers=6   (large capacity)
-    - chunk_duration=10.0, num_layers=7  (very large capacity)
     
     Args:
         chunk_duration: Audio chunk length in seconds (default 4.0)
@@ -531,10 +525,10 @@ def get_overfit_config(chunk_duration=4.0, num_layers=4):
     """
     return {
         'batch_size': 1,
-        'learning_rate': 2e-4,
+        'learning_rate': 3e-4,
         'num_epochs': 100,
         'chunk_duration': chunk_duration,
-        'chunk_overlap': 0.3,
+        'chunk_overlap': 0.5,
         'patience': 200,
         'device': 'cuda' if torch.cuda.is_available() else 'cpu',
         'num_layers': num_layers
