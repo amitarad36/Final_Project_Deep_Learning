@@ -510,14 +510,15 @@ def get_training_config():
 
 def get_overfit_config():
     """
-    Returns configuration for overfitting test on 1 song.
+    Overfit configuration. Adjust these in notebook before training.
     """
     return {
-        'batch_size': 8,
+        'batch_size': 2,
         'learning_rate': 1e-3,
         'num_epochs': 100,
-        'chunk_duration': 1.0,
+        'chunk_duration': 4.0,
         'chunk_overlap': 0.3,
+        'patience': 20,
         'device': 'cuda' if torch.cuda.is_available() else 'cpu'
     }
 
@@ -618,12 +619,13 @@ def run_overfit_1song(
     mix_files = [all_mix_files[idx]]
     tgt_files = [all_tgt_files[idx]]
 
-    # Use ChunkedDataset for 1-sec segments with overlap
+    chunk_dur = overfit_config.get('chunk_duration', 4.0)
     tiny_ds = ChunkedDataset(
         mix_files, tgt_files,
-        chunk_duration=overfit_config.get('chunk_duration', 1.0),
+        chunk_duration=chunk_dur,
         overlap=overfit_config.get('chunk_overlap', 0.3)
     )
+    print(f"   Song #{idx}: {len(tiny_ds)} chunks ({chunk_dur}s each)")
     tiny_loader = DataLoader(tiny_ds, batch_size=overfit_config['batch_size'], shuffle=False)
 
     trainer_overfit = UniversalTrainer(
