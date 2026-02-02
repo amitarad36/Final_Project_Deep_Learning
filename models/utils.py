@@ -592,20 +592,36 @@ def plot_text_graph(history, title):
 # ==============================================================================
 # NOTEBOOK COMPACT HELPERS
 # ==============================================================================
-def get_curriculum_file_lists(cache_dir="../data"):
+def get_curriculum_file_lists(cache_dir="../data", split='train'):
     """
     Returns sorted file lists for stage1 and stage2 (mixture/target).
+    
+    Args:
+        cache_dir: Root data directory
+        split: 'train', 'val', or 'test' (default: 'train' for backward compatibility)
+        
+    Returns:
+        Tuple of (mix_files_stage1, tgt_files_stage1, mix_files_stage2, tgt_files_stage2)
     """
     data_root = Path(cache_dir)
-    s1_mix_path = data_root / "stage1" / "mixture"
-    s1_tgt_path = data_root / "stage1" / "target"
-    s2_mix_path = data_root / "stage2" / "mixture"
-    s2_tgt_path = data_root / "stage2" / "target"
+    
+    # Try new structure first (stage/split/type)
+    s1_mix_path = data_root / "stage1" / split / "mixture"
+    s1_tgt_path = data_root / "stage1" / split / "target"
+    s2_mix_path = data_root / "stage2" / split / "mixture"
+    s2_tgt_path = data_root / "stage2" / split / "target"
+    
+    # Fallback to old structure (stage/type) if new doesn't exist
+    if not s1_mix_path.exists():
+        s1_mix_path = data_root / "stage1" / "mixture"
+        s1_tgt_path = data_root / "stage1" / "target"
+        s2_mix_path = data_root / "stage2" / "mixture"
+        s2_tgt_path = data_root / "stage2" / "target"
 
-    mix_files_stage1 = sorted(list(s1_mix_path.glob("*.npy")))
-    tgt_files_stage1 = sorted(list(s1_tgt_path.glob("*.npy")))
-    mix_files_stage2 = sorted(list(s2_mix_path.glob("*.npy")))
-    tgt_files_stage2 = sorted(list(s2_tgt_path.glob("*.npy")))
+    mix_files_stage1 = sorted(list(s1_mix_path.glob("*.npy"))) if s1_mix_path.exists() else []
+    tgt_files_stage1 = sorted(list(s1_tgt_path.glob("*.npy"))) if s1_tgt_path.exists() else []
+    mix_files_stage2 = sorted(list(s2_mix_path.glob("*.npy"))) if s2_mix_path.exists() else []
+    tgt_files_stage2 = sorted(list(s2_tgt_path.glob("*.npy"))) if s2_tgt_path.exists() else []
 
     return mix_files_stage1, tgt_files_stage1, mix_files_stage2, tgt_files_stage2
 
@@ -622,19 +638,21 @@ def run_overfit_1song(
 ):
     """
     Runs (or loads) an overfit sanity check on 1 random song.
-    Uses ChunkedDataset for 1-second segments with overlap.
+    Uses preprocessed data from stage1/train.
     Returns training history.
     """
     import random
     from torch.utils.data import DataLoader
 
     os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    s1_root = Path(cache_dir) / "stage1"
-    all_mix_files = sorted(list((s1_root / "mixture").glob("*.npy")))
-    all_tgt_files = sorted(list((s1_root / "target").glob("*.npy")))
+    
+    # Load from preprocessed train split
+    s1_train_root = Path(cache_dir) / "stage1" / "train"
+    all_mix_files = sorted(list((s1_train_root / "mixture").glob("*.npy")))
+    all_tgt_files = sorted(list((s1_train_root / "target").glob("*.npy")))
 
     if len(all_mix_files) < 1 or len(all_tgt_files) < 1:
-        raise ValueError("Not enough data for overfit test. Please check your dataset.")
+        raise ValueError("Not enough data for overfit test. Please run preprocessing first.")
 
     # Select 1 random song
     idx = random.randint(0, len(all_mix_files) - 1)
@@ -688,34 +706,18 @@ def run_full_training(
 ):
     """
     Runs (or loads) full training for stage1 and stage2.
-    Uses ChunkedDataset for 1-second segments with overlap.
+    Uses preprocessed train/val/test splits.
     Returns histories for both stages.
     """
     from torch.utils.data import DataLoader
 
     # Stage 1
-    print("\n--- Stage 1: Vocals + Other -> Other ---")
-    s1_root = Path(cache_dir) / "stage1"
-    s1_mix = sorted(list((s1_root / "mixture").glob("*.npy")))
-    s1_tgt = sorted(list((s1_root / "target").glob("*.npy")))
-
-    split_s1 = int(len(s1_mix) * 0.8)
-    train_ds1 = ChunkedDataset(
-        s1_mix[:split_s1], s1_tgt[:split_s1],
-        chunk_duration=train_config.get('chunk_duration', 1.0),
-        overlap=train_config.get('chunk_overlap', 0.3)
-    )
-    val_ds1 = ChunkedDataset(
-        s1_mix[split_s1:], s1_tgt[split_s1:],
-        chunk_duration=train_config.get('chunk_duration', 1.0),
-        overlap=train_config.get('chunk_overlap', 0.3)
-    )
-
-    if len(train_ds1) < 1 or len(val_ds1) < 1:
-        raise ValueError("Not enough data for full training Stage 1. Please check your dataset.")
-
-    train_loader1 = DataLoader(train_ds1, batch_size=train_config['batch_size'], shuffle=True)
-    val_loader1 = DataLoader(val_ds1, batch_size=train_config['batch_size'], shuffle=False)
+    print("\n--- Stage 1: Weighted Mixture → Vocals ---")
+    train_loader1 = get_data_loaders(cache_dir, stage='stage1', split='train', batch_size=train_config['batch_size'])
+    val_loader1 = get_data_loaders(cache_dir, stage='stage1', split='val', batch_size=train_config['batch_size'])
+    
+    print(f"   Train: {len(train_loader1.dataset)} samples")
+    print(f"   Val:   {len(val_loader1.dataset)} samples")
 
     trainer_s1 = UniversalTrainer(
         model=model,
@@ -738,28 +740,12 @@ def run_full_training(
         hist_s1 = ckpt.get('history', {})
 
     # Stage 2
-    print("\n--- Stage 2: Full Mix -> Other ---")
-    s2_root = Path(cache_dir) / "stage2"
-    s2_mix = sorted(list((s2_root / "mixture").glob("*.npy")))
-    s2_tgt = sorted(list((s2_root / "target").glob("*.npy")))
-
-    split_s2 = int(len(s2_mix) * 0.8)
-    train_ds2 = ChunkedDataset(
-        s2_mix[:split_s2], s2_tgt[:split_s2],
-        chunk_duration=train_config.get('chunk_duration', 1.0),
-        overlap=train_config.get('chunk_overlap', 0.3)
-    )
-    val_ds2 = ChunkedDataset(
-        s2_mix[split_s2:], s2_tgt[split_s2:],
-        chunk_duration=train_config.get('chunk_duration', 1.0),
-        overlap=train_config.get('chunk_overlap', 0.3)
-    )
-
-    if len(train_ds2) < 1 or len(val_ds2) < 1:
-        raise ValueError("Not enough data for full training Stage 2. Please check your dataset.")
-
-    train_loader2 = DataLoader(train_ds2, batch_size=train_config['batch_size'], shuffle=True)
-    val_loader2 = DataLoader(val_ds2, batch_size=train_config['batch_size'], shuffle=False)
+    print("\n--- Stage 2: Balanced Mixture → Vocals ---")
+    train_loader2 = get_data_loaders(cache_dir, stage='stage2', split='train', batch_size=train_config['batch_size'])
+    val_loader2 = get_data_loaders(cache_dir, stage='stage2', split='val', batch_size=train_config['batch_size'])
+    
+    print(f"   Train: {len(train_loader2.dataset)} samples")
+    print(f"   Val:   {len(val_loader2.dataset)} samples")
 
     for param_group in optimizer.param_groups:
         param_group['lr'] = train_config['learning_rate'] * 0.1
@@ -861,6 +847,7 @@ def demo_separation_sample(
     processor,
     cache_dir="../data",
     stage="stage1",
+    split="train",
     song_num=12,
     duration=6,
     sr=22050,
@@ -869,13 +856,35 @@ def demo_separation_sample(
 ):
     """
     Visualizes and (optionally) plays mixture/target/predicted audio for one sample.
+    
+    Args:
+        model: Trained model
+        processor: AudioProcessor
+        cache_dir: Root data directory
+        stage: 'stage1' or 'stage2'
+        split: 'train', 'val', or 'test'
+        song_num: Index of sample to visualize
+        duration: Duration in seconds
+        sr: Sample rate
+        device: 'cpu' or 'cuda'
+        play_audio_output: Whether to play audio
     """
     data_root = Path(cache_dir)
-    mix_path = data_root / stage / "mixture"
-    tgt_path = data_root / stage / "target"
+    
+    # Try new structure first (stage/split/type)
+    mix_path = data_root / stage / split / "mixture"
+    tgt_path = data_root / stage / split / "target"
+    
+    # Fallback to old structure (stage/type)
+    if not mix_path.exists():
+        mix_path = data_root / stage / "mixture"
+        tgt_path = data_root / stage / "target"
 
     mix_files = sorted(list(mix_path.glob("*.npy")))
     tgt_files = sorted(list(tgt_path.glob("*.npy")))
+    
+    if len(mix_files) == 0:
+        raise FileNotFoundError(f"No data found in {mix_path}")
 
     n_samples = sr * duration
     mix_wav = np.load(mix_files[song_num])[:n_samples]
@@ -922,10 +931,252 @@ def demo_separation_sample(
     }
 
 # ==============================================================================
-# CACHING LOGIC
+# MUSDB18 PREPROCESSING (Main Entry Point)
+# ==============================================================================
+def preprocess_musdb18(
+    musdb18_path,
+    output_dir,
+    chunk_duration=8.0,
+    overlap=0.5,
+    sample_rate=22050,
+    stage1_ratio=0.7,
+    train_ratio=0.7,
+    val_ratio=0.15,
+    test_ratio=0.15
+):
+    """
+    Complete preprocessing pipeline for MUSDB18 dataset.
+    
+    Steps:
+    1. Load train + valid subsets from MUSDB18
+    2. Chunk all full-length songs into training segments
+    3. Create Stage 1 (70%) and Stage 2 (30%) curriculum splits
+    4. Further split each stage into train/val/test
+    5. Save organized data ready for DataLoaders
+    
+    Args:
+        musdb18_path: Path to extracted musdb18 folder
+        output_dir: Where to save processed data
+        chunk_duration: Length of each chunk in seconds
+        overlap: Overlap ratio (0.5 = 50% overlap)
+        sample_rate: Target sample rate
+        stage1_ratio: Ratio of chunks for stage1 (rest goes to stage2)
+        train_ratio: Ratio for training set
+        val_ratio: Ratio for validation set
+        test_ratio: Ratio for test set
+        
+    Returns:
+        Dictionary with file counts for each split
+    """
+    import musdb
+    from tqdm import tqdm
+    
+    print(f"\n{'='*70}")
+    print("MUSDB18 PREPROCESSING PIPELINE")
+    print(f"{'='*70}\n")
+    
+    # Load MUSDB18
+    print(f"📂 Loading MUSDB18 from: {musdb18_path}")
+    mus_train = musdb.DB(root=str(musdb18_path), is_wav=True, subsets='train')
+    mus_valid = musdb.DB(root=str(musdb18_path), is_wav=True, subsets='valid')
+    all_tracks = list(mus_train.tracks) + list(mus_valid.tracks)
+    
+    print(f"✅ Found {len(mus_train.tracks)} tracks in TRAIN")
+    print(f"✅ Found {len(mus_valid.tracks)} tracks in VALID")
+    print(f"📊 Total tracks to process: {len(all_tracks)}\n")
+    
+    # Configuration
+    chunk_samples = int(chunk_duration * sample_rate)
+    hop_samples = int(chunk_samples * (1 - overlap))
+    
+    print(f"⚙️  Settings:")
+    print(f"   Chunk Duration: {chunk_duration}s ({chunk_samples} samples)")
+    print(f"   Overlap: {overlap*100:.0f}%")
+    print(f"   Sample Rate: {sample_rate} Hz")
+    print(f"   Stage 1: {stage1_ratio*100:.0f}% | Stage 2: {(1-stage1_ratio)*100:.0f}%")
+    print(f"   Train: {train_ratio*100:.0f}% | Val: {val_ratio*100:.0f}% | Test: {test_ratio*100:.0f}%\n")
+    
+    # Create output directories
+    output_root = Path(output_dir)
+    stage_dirs = {}
+    for stage in ['stage1', 'stage2']:
+        for split in ['train', 'val', 'test']:
+            for data_type in ['mixture', 'target']:
+                dir_path = output_root / stage / split / data_type
+                dir_path.mkdir(parents=True, exist_ok=True)
+                stage_dirs[f"{stage}_{split}_{data_type}"] = dir_path
+    
+    # Process tracks and collect chunks
+    print("🔄 Processing tracks into chunks...\n")
+    all_chunks = []  # Will store (stage, mixture, target) tuples
+    
+    for track_idx, track in enumerate(tqdm(all_tracks, desc="Processing tracks")):
+        # Load all stems
+        vocals = track.targets['vocals'].audio  # Shape: (samples, 2) stereo
+        drums = track.targets['drums'].audio
+        bass = track.targets['bass'].audio
+        other = track.targets['other'].audio
+        
+        # Convert to mono and resample
+        vocals_mono = librosa.to_mono(vocals.T)
+        drums_mono = librosa.to_mono(drums.T)
+        bass_mono = librosa.to_mono(bass.T)
+        other_mono = librosa.to_mono(other.T)
+        
+        if track.rate != sample_rate:
+            vocals_mono = librosa.resample(vocals_mono, orig_sr=track.rate, target_sr=sample_rate)
+            drums_mono = librosa.resample(drums_mono, orig_sr=track.rate, target_sr=sample_rate)
+            bass_mono = librosa.resample(bass_mono, orig_sr=track.rate, target_sr=sample_rate)
+            other_mono = librosa.resample(other_mono, orig_sr=track.rate, target_sr=sample_rate)
+        
+        # Ensure all stems have same length
+        min_len = min(len(vocals_mono), len(drums_mono), len(bass_mono), len(other_mono))
+        vocals_mono = vocals_mono[:min_len]
+        drums_mono = drums_mono[:min_len]
+        bass_mono = bass_mono[:min_len]
+        other_mono = other_mono[:min_len]
+        
+        # Chunk the audio
+        num_chunks = (min_len - chunk_samples) // hop_samples + 1
+        
+        for i in range(num_chunks):
+            start = i * hop_samples
+            end = start + chunk_samples
+            
+            if end > min_len:
+                break
+            
+            # Extract chunks for all stems (identical time segments)
+            vocals_chunk = vocals_mono[start:end]
+            drums_chunk = drums_mono[start:end]
+            bass_chunk = bass_mono[start:end]
+            other_chunk = other_mono[start:end]
+            
+            # Create accompaniment (drums + bass + other)
+            accompaniment_chunk = drums_chunk + bass_chunk + other_chunk
+            
+            # Decide stage based on ratio
+            stage = 'stage1' if np.random.rand() < stage1_ratio else 'stage2'
+            
+            if stage == 'stage1':
+                # STAGE 1: Simple 2-source separation (vocals + other only)
+                # Easier curriculum step: learn to separate just 2 sources
+                mixture = 0.50 * vocals_chunk + 0.50 * other_chunk
+                target = vocals_chunk
+            else:
+                # STAGE 2: Complex 4-source separation (vocals vs all accompaniment)
+                # Harder task: vocals competing with drums, bass, and other
+                mixture = 0.40 * vocals_chunk + 0.60 * accompaniment_chunk
+                target = vocals_chunk
+            
+            # Normalize to prevent clipping
+            max_val = max(np.abs(mixture).max(), np.abs(target).max())
+            if max_val > 0:
+                mixture = mixture / max_val
+                target = target / max_val
+            
+            all_chunks.append((stage, mixture.astype(np.float32), target.astype(np.float32)))
+    
+    # Shuffle and split chunks
+    print(f"\n📊 Total chunks created: {len(all_chunks)}")
+    np.random.shuffle(all_chunks)
+    
+    # Separate by stage
+    stage1_chunks = [c for c in all_chunks if c[0] == 'stage1']
+    stage2_chunks = [c for c in all_chunks if c[0] == 'stage2']
+    
+    print(f"   Stage 1: {len(stage1_chunks)} chunks ({len(stage1_chunks)/len(all_chunks)*100:.1f}%)")
+    print(f"   Stage 2: {len(stage2_chunks)} chunks ({len(stage2_chunks)/len(all_chunks)*100:.1f}%)\n")
+    
+    # Split each stage into train/val/test
+    def split_and_save(chunks, stage_name):
+        n = len(chunks)
+        train_end = int(n * train_ratio)
+        val_end = train_end + int(n * val_ratio)
+        
+        splits = {
+            'train': chunks[:train_end],
+            'val': chunks[train_end:val_end],
+            'test': chunks[val_end:]
+        }
+        
+        counts = {}
+        for split_name, split_chunks in splits.items():
+            mix_dir = stage_dirs[f"{stage_name}_{split_name}_mixture"]
+            tgt_dir = stage_dirs[f"{stage_name}_{split_name}_target"]
+            
+            for idx, (_, mixture, target) in enumerate(split_chunks):
+                np.save(mix_dir / f"{idx:06d}.npy", mixture)
+                np.save(tgt_dir / f"{idx:06d}.npy", target)
+            
+            counts[split_name] = len(split_chunks)
+        
+        return counts
+    
+    print("💾 Saving organized data...")
+    stage1_counts = split_and_save(stage1_chunks, 'stage1')
+    stage2_counts = split_and_save(stage2_chunks, 'stage2')
+    
+    # Summary
+    print(f"\n{'='*70}")
+    print("✅ PREPROCESSING COMPLETE!")
+    print(f"{'='*70}\n")
+    print("📁 Data Organization:")
+    print(f"\n   STAGE 1 (Weighted Mixture → Vocals):")
+    print(f"      Train: {stage1_counts['train']:,} chunks")
+    print(f"      Val:   {stage1_counts['val']:,} chunks")
+    print(f"      Test:  {stage1_counts['test']:,} chunks")
+    print(f"\n   STAGE 2 (Balanced Mixture → Vocals):")
+    print(f"      Train: {stage2_counts['train']:,} chunks")
+    print(f"      Val:   {stage2_counts['val']:,} chunks")
+    print(f"      Test:  {stage2_counts['test']:,} chunks")
+    print(f"\n   💾 Saved to: {output_root}\n")
+    
+    return {
+        'stage1': stage1_counts,
+        'stage2': stage2_counts,
+        'total_chunks': len(all_chunks)
+    }
+
+
+# ==============================================================================
+# DATA LOADING UTILITIES
+# ==============================================================================
+def get_data_loaders(data_dir, stage='stage1', split='train', batch_size=16):
+    """
+    Create DataLoader for a specific stage and split.
+    
+    Args:
+        data_dir: Root data directory
+        stage: 'stage1' or 'stage2'
+        split: 'train', 'val', or 'test'
+        batch_size: Batch size for DataLoader
+        
+    Returns:
+        DataLoader ready for training/evaluation
+    """
+    from torch.utils.data import DataLoader
+    
+    data_root = Path(data_dir) / stage / split
+    mix_files = sorted((data_root / 'mixture').glob("*.npy"))
+    tgt_files = sorted((data_root / 'target').glob("*.npy"))
+    
+    if len(mix_files) == 0:
+        raise FileNotFoundError(f"No data found in {data_root}")
+    
+    dataset = StandardDataset(mix_files, tgt_files)
+    loader = DataLoader(dataset, batch_size=batch_size, shuffle=(split=='train'))
+    
+    return loader
+
+
+# ==============================================================================
+# LEGACY CACHING LOGIC (Kept for backward compatibility)
 # ==============================================================================
 def prepare_curriculum_cache(mus, cache_dir="../data", sr=22050, force_rebuild=False):
     """
+    DEPRECATED: Use preprocess_musdb18() instead.
+    
     Generates and caches curriculum data from musdb tracks.
     Uses realistic mixture weights based on typical music production levels.
     Stage 1: Vocals + Other -> Other (simpler task)
@@ -1021,3 +1272,303 @@ def plot_loss_history(history, title="Training Loss"):
         print(f"❌ Error plotting history: {e}")
         import traceback
         traceback.print_exc()
+
+# ===============================================================================
+# INFERENCE: SEPARATE FULL-LENGTH SONGS
+# ===============================================================================
+def separate_full_song(
+    model,
+    processor,
+    audio_path,
+    chunk_duration=8.0,
+    overlap=0.5,
+    sr=22050,
+    device='cpu'
+):
+    """
+    Separate vocals from a full-length song using overlapping chunks.
+    
+    Handles variable-length audio by:
+    1. Chunking into fixed-size segments with overlap
+    2. Processing each chunk through the model
+    3. Reconstructing using Hann window for smooth overlaps
+    4. Trimming back to original length
+    
+    Args:
+        model: Trained separation model
+        processor: AudioProcessor instance
+        audio_path: Path to audio file (WAV/MP3)
+        chunk_duration: Duration of each chunk in seconds (default 8.0)
+        overlap: Overlap ratio 0-1 (default 0.5 = 50%)
+        sr: Sample rate (default 22050)
+        device: 'cpu' or 'cuda'
+    
+    Returns:
+        numpy array: Separated vocals (same length as input)
+    """
+    # 1. Load full song
+    audio, _ = librosa.load(audio_path, sr=sr, mono=True)
+    original_length = len(audio)
+    
+    print(f"\n{'='*70}")
+    print(f"SEPARATING: {Path(audio_path).name}")
+    print(f"{'='*70}")
+    print(f"Duration: {original_length / sr:.1f}s | Sample Rate: {sr} Hz")
+    
+    # 2. Define chunk parameters
+    chunk_samples = int(chunk_duration * sr)  # e.g., 8s * 22050 = 176,400
+    hop_samples = int(chunk_samples * (1 - overlap))  # e.g., 50% overlap = 88,200
+    
+    # 3. Pad audio to fit chunks evenly
+    num_chunks = int(np.ceil((original_length - chunk_samples) / hop_samples)) + 1
+    padded_length = (num_chunks - 1) * hop_samples + chunk_samples
+    audio_padded = np.pad(audio, (0, padded_length - original_length), mode='constant')
+    
+    print(f"Chunk Size: {chunk_duration}s ({chunk_samples} samples)")
+    print(f"Hop Size: {chunk_duration * (1-overlap):.1f}s ({hop_samples} samples)")
+    print(f"Num Chunks: {num_chunks}")
+    print()
+    
+    # 4. Create Hann window for overlap-add reconstruction
+    window = np.hanning(chunk_samples + 1)[:-1]
+    
+    # 5. Process each chunk
+    model.eval()
+    reconstructed = np.zeros(padded_length)
+    window_sum = np.zeros(padded_length)  # For normalization
+    
+    print(f"Processing chunks...")
+    with torch.no_grad():
+        for i in range(num_chunks):
+            if (i + 1) % max(1, num_chunks // 5) == 0 or i == 0:
+                print(f"  [{i+1}/{num_chunks}] chunks processed")
+            
+            start = i * hop_samples
+            end = start + chunk_samples
+            
+            # Extract chunk
+            chunk = audio_padded[start:end]
+            
+            # Convert to spectrogram
+            chunk_mag, chunk_phase = processor.to_spectrogram(torch.tensor(chunk))
+            
+            # Prepare input for model
+            if chunk_mag.dim() == 2:
+                chunk_mag_in = chunk_mag.unsqueeze(0).unsqueeze(0).to(device)
+            elif chunk_mag.dim() == 3:
+                chunk_mag_in = chunk_mag.unsqueeze(1).to(device)
+            else:
+                chunk_mag_in = chunk_mag.unsqueeze(0).unsqueeze(0).to(device)
+            
+            # Run through model
+            with torch.no_grad():
+                mask = model(chunk_mag_in)
+                
+                # Handle shape mismatch
+                if mask.shape != chunk_mag_in.shape:
+                    mask = mask[:, :, :chunk_mag_in.shape[2], :chunk_mag_in.shape[3]]
+                
+                # Apply mask to mixture
+                est_mag = mask.squeeze(0).squeeze(0) * chunk_mag.to(device)
+                
+                # Convert back to waveform
+                est_wav = processor.to_waveform(est_mag.cpu(), chunk_phase.cpu())
+            
+            # Overlap-add with windowing
+            weighted_chunk = est_wav * window
+            reconstructed[start:end] += weighted_chunk
+            window_sum[start:end] += window
+    
+    # 6. Normalize by window overlap
+    reconstructed = np.divide(reconstructed, window_sum, where=window_sum > 0, out=reconstructed)
+    
+    # 7. Trim back to original length
+    output = reconstructed[:original_length]
+    
+    print(f"\n✅ Separation complete!")
+    print(f"Output shape: {output.shape} | Duration: {len(output)/sr:.1f}s")
+    print(f"{'='*70}\n")
+    
+    return output
+
+
+def save_separated_audio(audio, output_path, sr=22050):
+    """
+    Save separated audio to disk.
+    
+    Args:
+        audio: numpy array of audio samples
+        output_path: Path to save WAV file
+        sr: Sample rate (default 22050)
+    """
+    import soundfile as sf
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    
+    # Normalize to prevent clipping
+    audio = audio / (np.max(np.abs(audio)) + 1e-8)
+    
+    sf.write(str(output_path), audio, sr)
+    print(f"✅ Saved: {output_path}")
+
+
+# ==============================================================================
+# VISUALIZATION AND EVALUATION UTILITIES
+# ==============================================================================
+def plot_spectrograms_and_play_audio(mixture, prediction, ground_truth, sr=22050, 
+                                     title="Evaluation", show_audio=True):
+    """
+    Plot spectrograms and provide audio playback for mixture, prediction, and ground truth.
+    
+    Args:
+        mixture: Input mixture audio (1-D array)
+        prediction: Model prediction (1-D array)
+        ground_truth: Ground truth target (1-D array)
+        sr: Sample rate
+        title: Title for the plots
+        show_audio: Whether to display audio playback widgets
+    """
+    import matplotlib.pyplot as plt
+    from IPython.display import display, HTML, Audio
+    import librosa
+    
+    # Compute spectrograms
+    S_mix = librosa.stft(mixture)
+    S_pred = librosa.stft(prediction)
+    S_truth = librosa.stft(ground_truth)
+    
+    mag_mix = np.abs(S_mix)
+    mag_pred = np.abs(S_pred)
+    mag_truth = np.abs(S_truth)
+    
+    # Convert to dB scale
+    S_db_mix = librosa.power_to_db(mag_mix**2, ref=np.max(mag_mix**2))
+    S_db_pred = librosa.power_to_db(mag_pred**2, ref=np.max(mag_pred**2))
+    S_db_truth = librosa.power_to_db(mag_truth**2, ref=np.max(mag_truth**2))
+    
+    # Plot spectrograms
+    fig, axes = plt.subplots(3, 1, figsize=(14, 10))
+    
+    im1 = axes[0].imshow(S_db_mix, aspect='auto', origin='lower', cmap='magma')
+    axes[0].set_title("Input Mixture", fontsize=12, fontweight='bold')
+    axes[0].set_ylabel("Frequency Bin")
+    plt.colorbar(im1, ax=axes[0])
+    
+    im2 = axes[1].imshow(S_db_pred, aspect='auto', origin='lower', cmap='magma')
+    axes[1].set_title("Model Prediction (Separated Vocals)", fontsize=12, fontweight='bold')
+    axes[1].set_ylabel("Frequency Bin")
+    plt.colorbar(im2, ax=axes[1])
+    
+    im3 = axes[2].imshow(S_db_truth, aspect='auto', origin='lower', cmap='magma')
+    axes[2].set_title("Ground Truth (Target Vocals)", fontsize=12, fontweight='bold')
+    axes[2].set_ylabel("Frequency Bin")
+    axes[2].set_xlabel("Time Frame")
+    plt.colorbar(im3, ax=axes[2])
+    
+    plt.suptitle(title, fontsize=14, fontweight='bold', y=1.00)
+    plt.tight_layout()
+    plt.show()
+    
+    # Audio playback
+    if show_audio:
+        print(f"\n{'='*70}")
+        print("🔊 AUDIO PLAYBACK")
+        print(f"{'='*70}\n")
+        
+        # Normalize for playback
+        mix_norm = mixture / (np.max(np.abs(mixture)) + 1e-8)
+        pred_norm = prediction / (np.max(np.abs(prediction)) + 1e-8)
+        truth_norm = ground_truth / (np.max(np.abs(ground_truth)) + 1e-8)
+        
+        print("🎵 Input Mixture:")
+        display(Audio(mix_norm, rate=sr))
+        
+        print("\n🎵 Model Prediction (Separated Vocals):")
+        display(Audio(pred_norm, rate=sr))
+        
+        print("\n🎵 Ground Truth (Target Vocals):")
+        display(Audio(truth_norm, rate=sr))
+
+
+def evaluate_with_song_selector(model, processor, data_dir, sr=22050, device='cpu'):
+    """
+    Create interactive song selector for full-length song evaluation.
+    Shows spectrograms and audio for selected test songs.
+    
+    Args:
+        model: Trained model
+        processor: AudioProcessor instance
+        data_dir: Path to data root directory
+        sr: Sample rate
+        device: CPU or GPU
+    """
+    from IPython.display import display, HTML, Audio
+    import ipywidgets as widgets
+    from pathlib import Path
+    
+    data_dir = Path(data_dir)
+    
+    # Find all test songs
+    test_dir = data_dir / "stage2" / "test" / "mixture"
+    if not test_dir.exists():
+        print(f"⚠️  Test data not found at {test_dir}")
+        return
+    
+    test_files = sorted(test_dir.glob("*.npy"))
+    num_songs = len(test_files)
+    
+    print(f"\n{'='*70}")
+    print(f"INTERACTIVE SONG EVALUATION - {num_songs} test songs available")
+    print(f"{'='*70}\n")
+    
+    if num_songs == 0:
+        print("No test songs found")
+        return
+    
+    # Create dropdown widget
+    song_dropdown = widgets.Dropdown(
+        options=[(f"Song {i:04d}", i) for i in range(num_songs)],
+        description='Select Song:',
+        style={'description_width': '120px'},
+        layout=widgets.Layout(width='300px')
+    )
+    
+    output_widget = widgets.Output()
+    
+    def on_song_selected(change):
+        output_widget.clear_output(wait=True)
+        with output_widget:
+            song_idx = change['new']
+            
+            # Load mixture and ground truth
+            mix_file = data_dir / "stage2" / "test" / "mixture" / f"{song_idx:06d}.npy"
+            tgt_file = data_dir / "stage2" / "test" / "target" / f"{song_idx:06d}.npy"
+            
+            if mix_file.exists() and tgt_file.exists():
+                mixture = np.load(mix_file)
+                ground_truth = np.load(tgt_file)
+                
+                # Process with model
+                mix_tensor = torch.FloatTensor(mixture).unsqueeze(0).unsqueeze(0).to(device)
+                
+                with torch.no_grad():
+                    model.eval()
+                    pred_tensor = model(mix_tensor)
+                
+                prediction = pred_tensor.squeeze().cpu().numpy()
+                
+                # Plot and play
+                title = f"Test Song {song_idx:04d} Evaluation"
+                plot_spectrograms_and_play_audio(
+                    mixture, prediction, ground_truth,
+                    sr=sr, title=title, show_audio=True
+                )
+    
+    song_dropdown.observe(on_song_selected, names='value')
+    
+    # Display initial song
+    display(song_dropdown)
+    display(output_widget)
+    
+    # Auto-display first song
+    on_song_selected({'new': 0})

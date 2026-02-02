@@ -4,6 +4,9 @@ data/checkpoints/*
 !data/checkpoints/.gitkeep
 checkpoints/*
 
+# musdb18 dataset
+musdb18/
+
 # Generated outputs
 outputs/
 
