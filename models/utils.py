@@ -7,6 +7,9 @@ import matplotlib.pyplot as plt
 from IPython.display import Audio, display
 import librosa
 
+# Configure CUDA memory to avoid fragmentation
+os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
+
 # Configure matplotlib for Jupyter/Colab environment
 try:
     from IPython import get_ipython
@@ -201,6 +204,11 @@ class UniversalTrainer:
         for epoch in global_pbar:
             train_loss = self.train_epoch(epoch + 1)
             val_loss = self.validate()
+            
+            # Clear CUDA cache periodically to free up memory
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            
             self.history['train_loss'].append(train_loss)
             self.history['val_loss'].append(val_loss)
             global_pbar.set_postfix({'Train': f"{train_loss:.4f}", 'Val': f"{val_loss:.4f}"})
@@ -244,6 +252,15 @@ class UniversalTrainer:
                 if epochs_no_improve >= self.patience:
                     print(f"Early stopping at epoch {epoch+1}")
                     break
+        # Always save a final checkpoint (even if best-save never triggered)
+        if save_path is not None:
+            try:
+                torch.save({
+                    'model_state_dict': self.model.state_dict(),
+                    'history': self.history
+                }, save_path)
+            except Exception as e:
+                print(f"[WARN] Could not save final checkpoint to {save_path}: {e}")
         return self.history
 
 # ==============================================================================
@@ -504,7 +521,7 @@ def get_training_config():
     Returns general training configuration for Model A.
     """
     return {
-        'batch_size': 16,
+        'batch_size': 4,  # Reduced from 16 to fit in VRAM (was causing OOM with batch_size=16)
         'learning_rate': 1e-4,
         'num_epochs': 50,
         'chunk_duration': 1.0,  # 1 second chunks
