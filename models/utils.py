@@ -535,11 +535,11 @@ def get_overfit_config(chunk_duration=4.0, num_layers=4):
     """
     return {
         'batch_size': 1,
-        'learning_rate': 1e-3,
+        'learning_rate': 2e-4,
         'num_epochs': 100,
         'chunk_duration': chunk_duration,
         'chunk_overlap': 0.3,
-        'patience': 20,
+        'patience': 200,
         'device': 'cuda' if torch.cuda.is_available() else 'cpu',
         'num_layers': num_layers
     }
