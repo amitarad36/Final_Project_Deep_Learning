@@ -103,7 +103,6 @@ class UniversalTrainer:
                 loss.backward()
                 self.optimizer.step()
                 total_loss += loss.item()
-                pbar.set_postfix({'batch_loss': f"{loss.item():.4f}"})
             else:
                 self.optimizer.zero_grad()
                 output = self.model(mix)
@@ -111,7 +110,6 @@ class UniversalTrainer:
                 loss.backward()
                 self.optimizer.step()
                 total_loss += loss.item()
-                pbar.set_postfix({'batch_loss': f"{loss.item():.4f}"})
         return total_loss / len(self.train_loader)
 
     def validate(self):
@@ -188,23 +186,17 @@ class UniversalTrainer:
             self.history['train_loss'].append(train_loss)
             self.history['val_loss'].append(val_loss)
             global_pbar.set_postfix({'Train': f"{train_loss:.4f}", 'Val': f"{val_loss:.4f}"})
-            print(f"Epoch {epoch+1}: Train {train_loss:.5f} | Val {val_loss:.5f}")
-            # Live logging to file
-            if log_file_path:
+            # Only print every 5 epochs to reduce I/O overhead in Colab
+            if (epoch + 1) % 5 == 0 or epoch == 0:
+                print(f"Epoch {epoch+1}: Train {train_loss:.5f} | Val {val_loss:.5f}")
+            # Live logging to file (only every 5 epochs)
+            if log_file_path and ((epoch + 1) % 5 == 0 or epoch == 0):
                 try:
                     with open(log_file_path, 'a') as f:
                         f.write(f"Epoch {epoch+1}: Train Loss = {train_loss:.4f}, Val Loss = {val_loss:.4f}\n")
                         f.flush()
                 except Exception as e:
                     print(f"[WARN] Could not write to log file {log_file_path}: {e}")
-            # Write a separate file for each epoch in the subfolder
-            if epoch_dir is not None:
-                try:
-                    epoch_file = os.path.join(epoch_dir, f"epoch_{epoch+1:03d}.txt")
-                    with open(epoch_file, 'w') as ef:
-                        ef.write(f"Epoch {epoch+1}: Train Loss = {train_loss:.4f}, Val Loss = {val_loss:.4f}\n")
-                except Exception as e:
-                    print(f"[WARN] Could not write epoch file {epoch_file}: {e}")
             if val_loss < self.best_val_loss:
                 self.best_val_loss = val_loss
                 best_epoch = epoch + 1
