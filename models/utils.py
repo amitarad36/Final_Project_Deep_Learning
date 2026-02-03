@@ -67,25 +67,8 @@ class UniversalTrainer:
         """
         self.model.train()
         total_loss = 0
-        # Use notebook tqdm if in notebook, else fallback to plain tqdm or print
-        def _in_notebook():
-            try:
-                from IPython import get_ipython
-                shell = get_ipython().__class__.__name__
-                if shell == 'ZMQInteractiveShell':
-                    return True  # Jupyter notebook or qtconsole
-                else:
-                    return False  # Other type (likely terminal)
-            except Exception:
-                return False
-
-        if _in_notebook():
-            from tqdm.notebook import tqdm as tqdm_bar
-        else:
-            from tqdm import tqdm as tqdm_bar
-
-        pbar = tqdm_bar(self.train_loader, desc=f"Ep {epoch_idx} Training", leave=False)
-        for batch in pbar:
+        # No batch-level progress bar to reduce verbosity in Colab
+        for batch in self.train_loader:
             mix = batch['mix'].to(self.device)
             tgt = batch['tgt'].to(self.device)
             if self.input_type == 'spectrogram':
@@ -186,11 +169,10 @@ class UniversalTrainer:
             self.history['train_loss'].append(train_loss)
             self.history['val_loss'].append(val_loss)
             global_pbar.set_postfix({'Train': f"{train_loss:.4f}", 'Val': f"{val_loss:.4f}"})
-            # Only print every 5 epochs to reduce I/O overhead in Colab
-            if (epoch + 1) % 5 == 0 or epoch == 0:
-                print(f"Epoch {epoch+1}: Train {train_loss:.5f} | Val {val_loss:.5f}")
-            # Live logging to file (only every 5 epochs)
-            if log_file_path and ((epoch + 1) % 5 == 0 or epoch == 0):
+            # Print every epoch
+            print(f"Epoch {epoch+1}: Train {train_loss:.5f} | Val {val_loss:.5f}")
+            # Live logging to file (every epoch)
+            if log_file_path:
                 try:
                     with open(log_file_path, 'a') as f:
                         f.write(f"Epoch {epoch+1}: Train Loss = {train_loss:.4f}, Val Loss = {val_loss:.4f}\n")
