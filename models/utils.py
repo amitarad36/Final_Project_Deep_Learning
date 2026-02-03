@@ -36,30 +36,6 @@ def check_checkpoint(checkpoint_path, checkpoint_name="Checkpoint"):
         print(f"   Training will start...")
         return False
 
-# ===============================================================================
-# TRAIN/LOAD STAGE HELPER
-# ===============================================================================
-def train_stage(mix_files, tgt_files, model, processor, batch_size, num_epochs, patience, learning_rate, ckpt_path, device):
-    """
-    Helper to train or load a model stage with checkpointing.
-    """
-    from torch.utils.data import DataLoader
-    split = int(len(mix_files) * 0.8)
-    train_ds = StandardDataset(mix_files[:split], tgt_files[:split])
-    val_ds = StandardDataset(mix_files[split:], tgt_files[split:])
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_ds, batch_size=batch_size, shuffle=False)
-    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-    loss_fn = torch.nn.L1Loss()
-    trainer = UniversalTrainer(model, train_loader, val_loader, processor, optimizer, loss_fn, device, patience, input_type='spectrogram')
-    if not os.path.exists(ckpt_path):
-        history = trainer.train(num_epochs, ckpt_path)
-    else:
-        print(f"Found existing checkpoint: {ckpt_path}. Loading...")
-        checkpoint = torch.load(ckpt_path, map_location=device)
-        model.load_state_dict(checkpoint['model_state_dict'])
-        history = checkpoint.get('history', {})
-    return history
 # ==============================================================================
 # Universal Trainer
 # ==============================================================================
@@ -322,7 +298,6 @@ def calculate_metrics(reference, estimate, sr=22050):
         'SAR': np.nanmean(scores['SAR'])
     }
     return metrics
-
 
 # ==============================================================================
 # 1. AUDIO PROCESSOR
@@ -631,154 +606,6 @@ def get_curriculum_file_lists(cache_dir="../data", split='train'):
     tgt_files_stage2 = sorted(list(s2_tgt_path.glob("*.npy"))) if s2_tgt_path.exists() else []
 
     return mix_files_stage1, tgt_files_stage1, mix_files_stage2, tgt_files_stage2
-
-
-def run_overfit_1song(
-    overfit_model,
-    overfit_processor,
-    overfit_optimizer,
-    overfit_loss_fn,
-    overfit_config,
-    cache_dir="../data",
-    save_path="../checkpoints/debug_overfit_1song.pth",
-    device="cpu",
-):
-    """
-    Runs (or loads) an overfit sanity check on 1 random song.
-    Uses preprocessed data from stage1/train.
-    Returns training history.
-    """
-    import random
-    from torch.utils.data import DataLoader
-
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    
-    # Load from preprocessed train split
-    s1_train_root = Path(cache_dir) / "stage1" / "train"
-    all_mix_files = sorted(list((s1_train_root / "mixture").glob("*.npy")))
-    all_tgt_files = sorted(list((s1_train_root / "target").glob("*.npy")))
-
-    if len(all_mix_files) < 1 or len(all_tgt_files) < 1:
-        raise ValueError("Not enough data for overfit test. Please run preprocessing first.")
-
-    # Select 1 random song
-    idx = random.randint(0, len(all_mix_files) - 1)
-    mix_files = [all_mix_files[idx]]
-    tgt_files = [all_tgt_files[idx]]
-
-    chunk_dur = overfit_config.get('chunk_duration', 4.0)
-    tiny_ds = ChunkedDataset(
-        mix_files, tgt_files,
-        chunk_duration=chunk_dur,
-        overlap=overfit_config.get('chunk_overlap', 0.3)
-    )
-    print(f"   Chunk file #{idx} (1 file): {len(tiny_ds)} sub-chunks ({chunk_dur}s each)")
-    tiny_loader = DataLoader(tiny_ds, batch_size=overfit_config['batch_size'], shuffle=False)
-
-    trainer_overfit = UniversalTrainer(
-        model=overfit_model,
-        train_loader=tiny_loader,
-        val_loader=tiny_loader,
-        processor=overfit_processor,
-        optimizer=overfit_optimizer,
-        loss_fn=overfit_loss_fn,
-        device=device,
-        patience=overfit_config.get('patience', 10)
-    )
-
-    history = {}
-    if not os.path.exists(save_path):
-        print(f"   Training from scratch on 1 random song (#{idx})...")
-        history = trainer_overfit.train(num_epochs=overfit_config['num_epochs'], save_path=save_path)
-    else:
-        print(f"✓ Found Checkpoint: {save_path}")
-        ckpt = torch.load(save_path, map_location=device)
-        overfit_model.load_state_dict(ckpt['model_state_dict'])
-        history = ckpt.get('history', {})
-
-    return history
-
-
-def run_full_training(
-    model,
-    processor,
-    optimizer,
-    loss_fn,
-    train_config,
-    cache_dir="../data",
-    log_file_path=None,
-    save_path_stage1="../checkpoints/full_stage1.pth",
-    save_path_stage2="../checkpoints/full_stage2.pth",
-    device="cpu",
-):
-    """
-    Runs (or loads) full training for stage1 and stage2.
-    Uses preprocessed train/val/test splits.
-    Returns histories for both stages.
-    """
-    from torch.utils.data import DataLoader
-
-    # Stage 1
-    print("\n--- Stage 1: Weighted Mixture → Vocals ---")
-    train_loader1 = get_data_loaders(cache_dir, stage='stage1', split='train', batch_size=train_config['batch_size'])
-    val_loader1 = get_data_loaders(cache_dir, stage='stage1', split='val', batch_size=train_config['batch_size'])
-    
-    print(f"   Train: {len(train_loader1.dataset)} samples")
-    print(f"   Val:   {len(val_loader1.dataset)} samples")
-
-    trainer_s1 = UniversalTrainer(
-        model=model,
-        train_loader=train_loader1,
-        val_loader=val_loader1,
-        processor=processor,
-        optimizer=optimizer,
-        loss_fn=loss_fn,
-        device=device,
-        patience=train_config.get('patience', 10)
-    )
-
-    hist_s1 = {}
-    if not os.path.exists(save_path_stage1):
-        hist_s1 = trainer_s1.train(num_epochs=train_config['num_epochs'], save_path=save_path_stage1, log_file_path=log_file_path)
-    else:
-        print(f"✓ Found Checkpoint: {save_path_stage1}")
-        ckpt = torch.load(save_path_stage1, map_location=device)
-        model.load_state_dict(ckpt['model_state_dict'])
-        hist_s1 = ckpt.get('history', {})
-
-    # Stage 2
-    print("\n--- Stage 2: Balanced Mixture → Vocals ---")
-    train_loader2 = get_data_loaders(cache_dir, stage='stage2', split='train', batch_size=train_config['batch_size'])
-    val_loader2 = get_data_loaders(cache_dir, stage='stage2', split='val', batch_size=train_config['batch_size'])
-    
-    print(f"   Train: {len(train_loader2.dataset)} samples")
-    print(f"   Val:   {len(val_loader2.dataset)} samples")
-
-    for param_group in optimizer.param_groups:
-        param_group['lr'] = train_config['learning_rate'] * 0.1
-    print(f"✓ Optimizer LR reduced to {train_config['learning_rate'] * 0.1}")
-
-    trainer_s2 = UniversalTrainer(
-        model=model,
-        train_loader=train_loader2,
-        val_loader=val_loader2,
-        processor=processor,
-        optimizer=optimizer,
-        loss_fn=loss_fn,
-        device=device,
-        patience=train_config.get('patience', 10)
-    )
-
-    hist_s2 = {}
-    if not os.path.exists(save_path_stage2):
-        hist_s2 = trainer_s2.train(num_epochs=train_config['num_epochs'], save_path=save_path_stage2, log_file_path=log_file_path)
-    else:
-        print(f"✓ Found Checkpoint: {save_path_stage2}")
-        ckpt = torch.load(save_path_stage2, map_location=device)
-        model.load_state_dict(ckpt['model_state_dict'])
-        hist_s2 = ckpt.get('history', {})
-
-    return hist_s1, hist_s2
 
 
 def plot_loss_from_checkpoint(ckpt_path, title="Loss Curves from Checkpoint"):
@@ -1200,6 +1027,72 @@ def prepare_curriculum_cache(mus, cache_dir="../data", sr=22050, force_rebuild=F
     
     # Realistic mixture weights (normalized to sum=1.0)
     # Based on typical music production levels
+
+
+    def compare_models_on_audio_file(
+        file_path,
+        model_lstm,
+        model_unet,
+        processor_lstm,
+        processor_unet,
+        device="cpu",
+        sr=22050,
+        duration=None,
+    ):
+        """
+        Loads an audio file and runs inference with both models.
+        Plots spectrograms and plays audio for mixture and predictions.
+        """
+        if not Path(file_path).exists():
+            raise FileNotFoundError(f"Audio file not found: {file_path}")
+
+        # Load audio (mono)
+        mix_wav, _ = librosa.load(file_path, sr=sr, mono=True)
+        if duration is not None:
+            mix_wav = mix_wav[: int(sr * duration)]
+
+        # LSTM inference
+        mix_mag_lstm, mix_phase_lstm = processor_lstm.to_spectrogram(torch.tensor(mix_wav))
+        mix_mag_in = mix_mag_lstm.unsqueeze(0).unsqueeze(0).to(device)
+        model_lstm.eval()
+        with torch.no_grad():
+            mask_lstm = model_lstm(mix_mag_in)
+            if mask_lstm.shape != mix_mag_in.shape:
+                mask_lstm = mask_lstm[:, :, :mix_mag_in.shape[2], :mix_mag_in.shape[3]]
+            est_mag_lstm = mask_lstm.squeeze(0).squeeze(0) * mix_mag_lstm.to(device)
+            est_wav_lstm = processor_lstm.to_waveform(est_mag_lstm.cpu(), mix_phase_lstm.cpu())
+
+        # U-Net inference
+        mix_mag_unet, mix_phase_unet = processor_unet.to_spectrogram(torch.tensor(mix_wav))
+        mix_mag_in = mix_mag_unet.unsqueeze(0).unsqueeze(0).to(device)
+        model_unet.eval()
+        with torch.no_grad():
+            mask_unet = model_unet(mix_mag_in)
+            if mask_unet.shape != mix_mag_in.shape:
+                mask_unet = mask_unet[:, :, :mix_mag_in.shape[2], :mix_mag_in.shape[3]]
+            est_mag_unet = mask_unet.squeeze(0).squeeze(0) * mix_mag_unet.to(device)
+            est_wav_unet = processor_unet.to_waveform(est_mag_unet.cpu(), mix_phase_unet.cpu())
+
+        # Spectrograms
+        print("\n=== Spectrograms ===")
+        show_spectrogram(mix_mag_lstm, title="Mixture Spectrogram")
+        show_spectrogram(est_mag_lstm.cpu(), title="LSTM Predicted Spectrogram")
+        show_spectrogram(est_mag_unet.cpu(), title="U-Net Predicted Spectrogram")
+
+        # Audio playback
+        print("\n=== Audio Playback ===")
+        play_audio(mix_wav, sr=sr, title="Input Mixture")
+        play_audio(est_wav_lstm, sr=sr, title="LSTM Prediction")
+        play_audio(est_wav_unet, sr=sr, title="U-Net Prediction")
+
+        return {
+            "mix_wav": mix_wav,
+            "est_wav_lstm": est_wav_lstm,
+            "est_wav_unet": est_wav_unet,
+            "mix_mag": mix_mag_lstm,
+            "est_mag_lstm": est_mag_lstm,
+            "est_mag_unet": est_mag_unet,
+        }
     weights = {
         'vocals': 0.35,   # Vocals usually prominent
         'drums': 0.30,    # Drums have strong presence
@@ -1579,3 +1472,537 @@ def evaluate_with_song_selector(model, processor, data_dir, sr=22050, device='cp
     
     # Auto-display first song
     on_song_selected({'new': 0})
+
+
+# ===============================================================================
+# MODEL A COMPARISON UTILITIES
+# ===============================================================================
+
+def initialize_model_a_lstm(device='cuda'):
+    """Initialize Model A (LSTM) with default configuration."""
+    from . import model_A as ma
+    import torch.optim as optim
+    import torch.nn as nn
+    
+    processor = AudioProcessor(device=device)
+    model = ma.CompactLSTMMasking(
+        freq_bins=1025,
+        hidden_size=256,
+        num_layers=1,
+        dropout=0.2
+    ).to(device)
+    optimizer = optim.Adam(model.parameters(), lr=get_training_config()['learning_rate'])
+    loss_fn = nn.MSELoss()
+    
+    return model, processor, optimizer, loss_fn
+
+
+def initialize_model_a_unet(device='cuda'):
+    """Initialize Model A (U-Net) with default configuration."""
+    from . import model_A as ma
+    import torch.optim as optim
+    import torch.nn as nn
+    
+    processor = AudioProcessor(device=device)
+    model = ma.TimeFrequencyDomainUNet(
+        in_channels=1,
+        out_channels=1,
+        base_filters=64,
+        num_layers=4,
+        batchnorm=True,
+        dropout=0.1
+    ).to(device)
+    optimizer = optim.Adam(model.parameters(), lr=get_training_config()['learning_rate'])
+    loss_fn = nn.MSELoss()
+    
+    return model, processor, optimizer, loss_fn
+
+
+def train_model_stage(
+    model,
+    processor,
+    optimizer,
+    loss_fn,
+    training_data_dir,
+    stage,
+    ckpt_path,
+    device,
+    train_config,
+    skip_training=False,
+):
+    """
+    Train or load a single stage for a given model.
+    """
+    ckpt_path = Path(ckpt_path)
+    hist = {}
+
+    if ckpt_path.exists():
+        print(f"✅ Found checkpoint: {ckpt_path.name}")
+        checkpoint = torch.load(ckpt_path, map_location=device)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        hist = checkpoint.get('history', {})
+        if hist:
+            print(f"   Best val loss: {min(hist.get('val_loss', [float('inf')])):.6f}")
+        return hist
+
+    if skip_training:
+        print("⏭️  Training skipped")
+        return hist
+
+    batch_size = train_config.get('batch_size', 8)
+    num_epochs = train_config.get('num_epochs', 50)
+    patience = train_config.get('patience', 10)
+
+    train_loader = get_data_loaders(training_data_dir, stage=stage, split='train',
+                                    batch_size=batch_size)
+    val_loader = get_data_loaders(training_data_dir, stage=stage, split='val',
+                                  batch_size=batch_size)
+
+    trainer = UniversalTrainer(
+        model=model,
+        train_loader=train_loader,
+        val_loader=val_loader,
+        processor=processor,
+        optimizer=optimizer,
+        loss_fn=loss_fn,
+        device=device,
+        patience=patience,
+        input_type='spectrogram'
+    )
+
+    hist = trainer.train(num_epochs=num_epochs, save_path=str(ckpt_path))
+    print(f"✅ Training complete! Best val loss: {min(hist['val_loss']):.6f}")
+    return hist
+
+
+def train_model_a_comparison(data_dir, checkpoint_dir, chunk_duration=8.0, device='cuda', skip_training=False, train_stage2=True):
+    """
+    Train both Model A architectures (LSTM and U-Net) sequentially.
+    
+    Args:
+        data_dir: Path to preprocessed data
+        checkpoint_dir: Path to save checkpoints
+        chunk_duration: Chunk duration in seconds
+        device: 'cuda' or 'cpu'
+        skip_training: If True, only load existing checkpoints
+        
+    Returns:
+        Dictionary with models, processors, and training histories
+    """
+    from pathlib import Path
+    
+    data_dir = Path(data_dir)
+    checkpoint_dir = Path(checkpoint_dir)
+    training_data_dir = data_dir / f"chunks_{chunk_duration:.0f}s"
+    train_config = get_training_config()
+    
+    results = {}
+    
+    print(f"\n{'='*70}")
+    print(f"MODEL A COMPARISON TRAINING")
+    print(f"{'='*70}\n")
+    
+    # ===== MODEL A (LSTM) - STAGE 1 =====
+    print("1️⃣ Model A (LSTM) - Stage 1")
+    print("-" * 70)
+    
+    model_lstm, processor_lstm, optimizer_lstm, loss_fn_lstm = initialize_model_a_lstm(device)
+    lstm_params = sum(p.numel() for p in model_lstm.parameters())
+    print(f"   Parameters: {lstm_params:,}")
+    
+    ckpt_lstm_s1 = checkpoint_dir / f"model_a_lstm_stage1_{chunk_duration:.0f}s.pth"
+    
+    if ckpt_lstm_s1.exists():
+        print(f"✅ Found checkpoint: {ckpt_lstm_s1.name}")
+        checkpoint = torch.load(ckpt_lstm_s1, map_location=device)
+        model_lstm.load_state_dict(checkpoint['model_state_dict'])
+        hist_lstm_s1 = checkpoint.get('history', {})
+        if hist_lstm_s1:
+            print(f"   Best val loss: {min(hist_lstm_s1.get('val_loss', [float('inf')])):.6f}")
+    elif not skip_training:
+        print("🚀 Starting training...")
+        batch_size = train_config.get('batch_size', 8)
+        num_epochs = train_config.get('num_epochs', 50)
+        patience = train_config.get('patience', 10)
+
+        train_loader = get_data_loaders(training_data_dir, stage='stage1', split='train', 
+                           batch_size=batch_size)
+        val_loader = get_data_loaders(training_data_dir, stage='stage1', split='val', 
+                         batch_size=batch_size)
+        
+        trainer = UniversalTrainer(
+            model=model_lstm, train_loader=train_loader, val_loader=val_loader,
+            processor=processor_lstm, optimizer=optimizer_lstm, loss_fn=loss_fn_lstm,
+            device=device, patience=patience, input_type='spectrogram'
+        )
+        hist_lstm_s1 = trainer.train(num_epochs=num_epochs, 
+                                     save_path=str(ckpt_lstm_s1))
+        print(f"✅ Training complete! Best val loss: {min(hist_lstm_s1['val_loss']):.6f}")
+    else:
+        hist_lstm_s1 = {}
+    
+    # ===== MODEL A (LSTM) - STAGE 2 =====
+    ckpt_lstm_s2 = checkpoint_dir / f"model_a_lstm_stage2_{chunk_duration:.0f}s.pth"
+    hist_lstm_s2 = {}
+
+    if train_stage2:
+        print(f"\n1️⃣ Model A (LSTM) - Stage 2")
+        print("-" * 70)
+        if ckpt_lstm_s2.exists():
+            print(f"✅ Found checkpoint: {ckpt_lstm_s2.name}")
+            checkpoint = torch.load(ckpt_lstm_s2, map_location=device)
+            model_lstm.load_state_dict(checkpoint['model_state_dict'])
+            hist_lstm_s2 = checkpoint.get('history', {})
+            if hist_lstm_s2:
+                print(f"   Best val loss: {min(hist_lstm_s2.get('val_loss', [float('inf')])):.6f}")
+        elif not skip_training:
+            print("🚀 Starting training...")
+            batch_size = train_config.get('batch_size', 8)
+            num_epochs = train_config.get('num_epochs', 50)
+            patience = train_config.get('patience', 10)
+
+            train_loader = get_data_loaders(training_data_dir, stage='stage2', split='train',
+                                           batch_size=batch_size)
+            val_loader = get_data_loaders(training_data_dir, stage='stage2', split='val',
+                                         batch_size=batch_size)
+
+            trainer = UniversalTrainer(
+                model=model_lstm, train_loader=train_loader, val_loader=val_loader,
+                processor=processor_lstm, optimizer=optimizer_lstm, loss_fn=loss_fn_lstm,
+                device=device, patience=patience, input_type='spectrogram'
+            )
+            hist_lstm_s2 = trainer.train(num_epochs=num_epochs,
+                                         save_path=str(ckpt_lstm_s2))
+            print(f"✅ Training complete! Best val loss: {min(hist_lstm_s2['val_loss']):.6f}")
+
+    results['lstm'] = {
+        'model': model_lstm,
+        'processor': processor_lstm,
+        'optimizer': optimizer_lstm,
+        'loss_fn': loss_fn_lstm,
+        'history': {
+            'stage1': hist_lstm_s1,
+            'stage2': hist_lstm_s2
+        },
+        'checkpoint': {
+            'stage1': ckpt_lstm_s1,
+            'stage2': ckpt_lstm_s2
+        }
+    }
+    
+    # ===== MODEL A (U-NET) - STAGE 1 =====
+    print(f"\n2️⃣ Model A (U-Net) - Stage 1")
+    print("-" * 70)
+    
+    model_unet, processor_unet, optimizer_unet, loss_fn_unet = initialize_model_a_unet(device)
+    unet_params = sum(p.numel() for p in model_unet.parameters())
+    print(f"   Parameters: {unet_params:,}")
+    
+    ckpt_unet_s1 = checkpoint_dir / f"model_a_unet_stage1_{chunk_duration:.0f}s.pth"
+    
+    if ckpt_unet_s1.exists():
+        print(f"✅ Found checkpoint: {ckpt_unet_s1.name}")
+        checkpoint = torch.load(ckpt_unet_s1, map_location=device)
+        model_unet.load_state_dict(checkpoint['model_state_dict'])
+        hist_unet_s1 = checkpoint.get('history', {})
+        if hist_unet_s1:
+            print(f"   Best val loss: {min(hist_unet_s1.get('val_loss', [float('inf')])):.6f}")
+    elif not skip_training:
+        print("🚀 Starting training...")
+        batch_size = train_config.get('batch_size', 8)
+        num_epochs = train_config.get('num_epochs', 50)
+        patience = train_config.get('patience', 10)
+
+        train_loader = get_data_loaders(training_data_dir, stage='stage1', split='train', 
+                           batch_size=batch_size)
+        val_loader = get_data_loaders(training_data_dir, stage='stage1', split='val', 
+                         batch_size=batch_size)
+        
+        trainer = UniversalTrainer(
+            model=model_unet, train_loader=train_loader, val_loader=val_loader,
+            processor=processor_unet, optimizer=optimizer_unet, loss_fn=loss_fn_unet,
+            device=device, patience=patience, input_type='spectrogram'
+        )
+        hist_unet_s1 = trainer.train(num_epochs=num_epochs, 
+                                     save_path=str(ckpt_unet_s1))
+        print(f"✅ Training complete! Best val loss: {min(hist_unet_s1['val_loss']):.6f}")
+    else:
+        hist_unet_s1 = {}
+    
+    # ===== MODEL A (U-NET) - STAGE 2 =====
+    ckpt_unet_s2 = checkpoint_dir / f"model_a_unet_stage2_{chunk_duration:.0f}s.pth"
+    hist_unet_s2 = {}
+
+    if train_stage2:
+        print(f"\n2️⃣ Model A (U-Net) - Stage 2")
+        print("-" * 70)
+        if ckpt_unet_s2.exists():
+            print(f"✅ Found checkpoint: {ckpt_unet_s2.name}")
+            checkpoint = torch.load(ckpt_unet_s2, map_location=device)
+            model_unet.load_state_dict(checkpoint['model_state_dict'])
+            hist_unet_s2 = checkpoint.get('history', {})
+            if hist_unet_s2:
+                print(f"   Best val loss: {min(hist_unet_s2.get('val_loss', [float('inf')])):.6f}")
+        elif not skip_training:
+            print("🚀 Starting training...")
+            batch_size = train_config.get('batch_size', 8)
+            num_epochs = train_config.get('num_epochs', 50)
+            patience = train_config.get('patience', 10)
+
+            train_loader = get_data_loaders(training_data_dir, stage='stage2', split='train',
+                                           batch_size=batch_size)
+            val_loader = get_data_loaders(training_data_dir, stage='stage2', split='val',
+                                         batch_size=batch_size)
+
+            trainer = UniversalTrainer(
+                model=model_unet, train_loader=train_loader, val_loader=val_loader,
+                processor=processor_unet, optimizer=optimizer_unet, loss_fn=loss_fn_unet,
+                device=device, patience=patience, input_type='spectrogram'
+            )
+            hist_unet_s2 = trainer.train(num_epochs=num_epochs,
+                                         save_path=str(ckpt_unet_s2))
+            print(f"✅ Training complete! Best val loss: {min(hist_unet_s2['val_loss']):.6f}")
+
+    results['unet'] = {
+        'model': model_unet,
+        'processor': processor_unet,
+        'optimizer': optimizer_unet,
+        'loss_fn': loss_fn_unet,
+        'history': {
+            'stage1': hist_unet_s1,
+            'stage2': hist_unet_s2
+        },
+        'checkpoint': {
+            'stage1': ckpt_unet_s1,
+            'stage2': ckpt_unet_s2
+        }
+    }
+    
+    return results
+
+
+def load_training_history_from_checkpoint(ckpt_path):
+    """Load training history from checkpoint or epoch files."""
+    import re
+    
+    ckpt_path = Path(ckpt_path)
+    
+    # Try epoch folder first
+    epoch_folder = ckpt_path.parent / f"{ckpt_path.stem}_epochs"
+    if epoch_folder.exists():
+        epoch_files = sorted(epoch_folder.glob("epoch_*.txt"))
+        train_losses = []
+        val_losses = []
+        
+        for epoch_file in epoch_files:
+            with open(epoch_file, 'r') as f:
+                content = f.read()
+                train_match = re.search(r'Train Loss[:\s=]+([\d.]+)', content)
+                val_match = re.search(r'Val Loss[:\s=]+([\d.]+)', content)
+                if train_match and val_match:
+                    train_losses.append(float(train_match.group(1)))
+                    val_losses.append(float(val_match.group(1)))
+        
+        if train_losses:
+            return {'train_loss': train_losses, 'val_loss': val_losses}
+    
+    # Fallback to checkpoint
+    if ckpt_path.exists():
+        ckpt = torch.load(ckpt_path, map_location='cpu')
+        return ckpt.get('history', {})
+    
+    return {}
+
+
+def plot_model_comparison(hist_lstm, hist_unet, title="Model A Comparison: LSTM vs U-Net"):
+    """Plot side-by-side training curves for LSTM and U-Net."""
+    if not hist_lstm or not hist_unet:
+        print("⚠️  Training histories not available")
+        return
+    
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 5))
+    
+    # Model A (LSTM)
+    epochs_lstm = range(1, len(hist_lstm['train_loss']) + 1)
+    ax1.plot(epochs_lstm, hist_lstm['train_loss'], 'o-', label='Train', linewidth=2, markersize=5)
+    ax1.plot(epochs_lstm, hist_lstm['val_loss'], 's--', label='Val', linewidth=2, markersize=5)
+    ax1.set_title('Model A (LSTM)', fontsize=14, fontweight='bold')
+    ax1.set_xlabel('Epoch', fontsize=11)
+    ax1.set_ylabel('Loss', fontsize=11)
+    ax1.legend(fontsize=10)
+    ax1.grid(True, alpha=0.3)
+    
+    # Model A (U-Net)
+    epochs_unet = range(1, len(hist_unet['train_loss']) + 1)
+    ax2.plot(epochs_unet, hist_unet['train_loss'], 'o-', label='Train', linewidth=2, markersize=5)
+    ax2.plot(epochs_unet, hist_unet['val_loss'], 's--', label='Val', linewidth=2, markersize=5)
+    ax2.set_title('Model A (U-Net)', fontsize=14, fontweight='bold')
+    ax2.set_xlabel('Epoch', fontsize=11)
+    ax2.set_ylabel('Loss', fontsize=11)
+    ax2.legend(fontsize=10)
+    ax2.grid(True, alpha=0.3)
+    
+    plt.suptitle(title, fontsize=16, fontweight='bold', y=1.02)
+    plt.tight_layout()
+    plt.show()
+    
+    # Print summary
+    print("\n" + "="*70)
+    print("TRAINING SUMMARY")
+    print("="*70)
+    
+    print(f"\nModel A (LSTM):")
+    print(f"   Epochs: {len(hist_lstm['train_loss'])}")
+    print(f"   Best Val Loss: {min(hist_lstm['val_loss']):.6f} (epoch {hist_lstm['val_loss'].index(min(hist_lstm['val_loss']))+1})")
+    print(f"   Final Train Loss: {hist_lstm['train_loss'][-1]:.6f}")
+    
+    print(f"\nModel A (U-Net):")
+    print(f"   Epochs: {len(hist_unet['train_loss'])}")
+    print(f"   Best Val Loss: {min(hist_unet['val_loss']):.6f} (epoch {hist_unet['val_loss'].index(min(hist_unet['val_loss']))+1})")
+    print(f"   Final Train Loss: {hist_unet['train_loss'][-1]:.6f}")
+    
+    # Winner
+    winner = "LSTM" if min(hist_lstm['val_loss']) < min(hist_unet['val_loss']) else "U-Net"
+    print(f"\n🏆 Best Performance: {winner}")
+
+
+def evaluate_separation_quality(model_lstm, model_unet, processor_lstm, processor_unet, 
+                                test_data_dir, stage='stage1', num_samples=10, sr=22050, device='cuda'):
+    """
+    Evaluate both models on test set using BSS metrics (SDR/SIR/SAR).
+    
+    Returns:
+        Dictionary with metrics for both models
+    """
+    try:
+        import museval
+    except ImportError:
+        print("Installing museval...")
+        import subprocess
+        import sys
+        subprocess.check_call([sys.executable, '-m', 'pip', 'install', 'museval'])
+        import museval
+    
+    test_mix_dir = Path(test_data_dir) / stage / "test" / "mixture"
+    test_tgt_dir = Path(test_data_dir) / stage / "test" / "target"
+    
+    if not test_mix_dir.exists():
+        print(f"⚠️  Test data not found at {test_mix_dir}")
+        return None
+    
+    mix_files = sorted(test_mix_dir.glob("*.npy"))[:num_samples]
+    tgt_files = sorted(test_tgt_dir.glob("*.npy"))[:num_samples]
+    
+    print("="*70)
+    print(f"QUANTITATIVE EVALUATION - SDR/SIR/SAR METRICS ({stage})")
+    print("="*70)
+    print(f"\nEvaluating on {len(mix_files)} test samples...\n")
+    
+    lstm_metrics = {'SDR': [], 'SIR': [], 'SAR': []}
+    unet_metrics = {'SDR': [], 'SIR': [], 'SAR': []}
+    
+    model_lstm.eval()
+    model_unet.eval()
+    
+    for idx, (mix_file, tgt_file) in enumerate(zip(mix_files, tgt_files)):
+        # Load audio
+        mix_wav = np.load(mix_file)
+        tgt_wav = np.load(tgt_file)
+        
+        min_len = min(len(mix_wav), len(tgt_wav))
+        mix_wav = mix_wav[:min_len]
+        tgt_wav = tgt_wav[:min_len]
+        
+        # Convert to spectrograms
+        mix_mag, mix_phase = processor_lstm.to_spectrogram(torch.tensor(mix_wav))
+        mix_mag_in = mix_mag.unsqueeze(0).unsqueeze(0).to(device)
+        
+        # LSTM prediction
+        with torch.no_grad():
+            mask_lstm = model_lstm(mix_mag_in)
+            est_mag_lstm = mask_lstm.squeeze(0).squeeze(0) * mix_mag.to(device)
+            est_wav_lstm = processor_lstm.to_waveform(est_mag_lstm.cpu(), mix_phase.cpu()).numpy()
+        
+        # U-Net prediction
+        with torch.no_grad():
+            mask_unet = model_unet(mix_mag_in)
+            est_mag_unet = mask_unet.squeeze(0).squeeze(0) * mix_mag.to(device)
+            est_wav_unet = processor_unet.to_waveform(est_mag_unet.cpu(), mix_phase.cpu()).numpy()
+        
+        # Ensure same length for evaluation
+        min_eval_len = min(len(tgt_wav), len(est_wav_lstm), len(est_wav_unet))
+        tgt_wav = tgt_wav[:min_eval_len]
+        est_wav_lstm = est_wav_lstm[:min_eval_len]
+        est_wav_unet = est_wav_unet[:min_eval_len]
+        
+        # Compute metrics using museval (BSS eval)
+        sdr_lstm, sir_lstm, sar_lstm, _ = museval.evaluate(
+            tgt_wav.reshape(1, -1), est_wav_lstm.reshape(1, -1),
+            win=sr, hop=sr
+        )
+        lstm_metrics['SDR'].append(np.nanmedian(sdr_lstm))
+        lstm_metrics['SIR'].append(np.nanmedian(sir_lstm))
+        lstm_metrics['SAR'].append(np.nanmedian(sar_lstm))
+        
+        sdr_unet, sir_unet, sar_unet, _ = museval.evaluate(
+            tgt_wav.reshape(1, -1), est_wav_unet.reshape(1, -1),
+            win=sr, hop=sr
+        )
+        unet_metrics['SDR'].append(np.nanmedian(sdr_unet))
+        unet_metrics['SIR'].append(np.nanmedian(sir_unet))
+        unet_metrics['SAR'].append(np.nanmedian(sar_unet))
+        
+        print(f"  Sample {idx+1}/{len(mix_files)} - LSTM: SDR={lstm_metrics['SDR'][-1]:.2f} | U-Net: SDR={unet_metrics['SDR'][-1]:.2f}")
+    
+    # Print results
+    print("\n" + "="*70)
+    print("EVALUATION RESULTS")
+    print("="*70)
+    
+    print(f"\nModel A (LSTM):")
+    print(f"   SDR: {np.mean(lstm_metrics['SDR']):.2f} ± {np.std(lstm_metrics['SDR']):.2f} dB")
+    print(f"   SIR: {np.mean(lstm_metrics['SIR']):.2f} ± {np.std(lstm_metrics['SIR']):.2f} dB")
+    print(f"   SAR: {np.mean(lstm_metrics['SAR']):.2f} ± {np.std(lstm_metrics['SAR']):.2f} dB")
+    
+    print(f"\nModel A (U-Net):")
+    print(f"   SDR: {np.mean(unet_metrics['SDR']):.2f} ± {np.std(unet_metrics['SDR']):.2f} dB")
+    print(f"   SIR: {np.mean(unet_metrics['SIR']):.2f} ± {np.std(unet_metrics['SIR']):.2f} dB")
+    print(f"   SAR: {np.mean(unet_metrics['SAR']):.2f} ± {np.std(unet_metrics['SAR']):.2f} dB")
+    
+    print(f"\n📊 Reference (Paper): SI-SDRi ~6.93 dB for vocals")
+    
+    winner = "LSTM" if np.mean(lstm_metrics['SDR']) > np.mean(unet_metrics['SDR']) else "U-Net"
+    improvement = abs(np.mean(lstm_metrics['SDR']) - np.mean(unet_metrics['SDR']))
+    print(f"\n🏆 Best SDR: {winner} (+{improvement:.2f} dB)")
+    
+    # Plot comparison
+    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+    metrics_list = ['SDR', 'SIR', 'SAR']
+    colors = ['#1f77b4', '#ff7f0e']
+    
+    for idx, metric in enumerate(metrics_list):
+        data = [lstm_metrics[metric], unet_metrics[metric]]
+        bp = axes[idx].boxplot(data, positions=[1, 2], widths=0.6,
+                               patch_artist=True, showmeans=True)
+        
+        for patch, color in zip(bp['boxes'], colors):
+            patch.set_facecolor(color)
+            patch.set_alpha(0.7)
+        
+        axes[idx].set_title(f'{metric} (dB)', fontsize=14, fontweight='bold')
+        axes[idx].set_xticks([1, 2])
+        axes[idx].set_xticklabels(['LSTM', 'U-Net'], fontsize=11)
+        axes[idx].set_ylabel('dB', fontsize=11)
+        axes[idx].grid(True, alpha=0.3, axis='y')
+        
+        for pos, vals, color in zip([1, 2], data, colors):
+            mean_val = np.mean(vals)
+            axes[idx].text(pos, mean_val, f'{mean_val:.2f}', 
+                          ha='center', va='bottom', fontweight='bold', fontsize=10)
+    
+    plt.suptitle('Model A Evaluation: LSTM vs U-Net - BSS Metrics', 
+                 fontsize=16, fontweight='bold', y=1.02)
+    plt.tight_layout()
+    plt.show()
+    
+    return {'lstm': lstm_metrics, 'unet': unet_metrics}
