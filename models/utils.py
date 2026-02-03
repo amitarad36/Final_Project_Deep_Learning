@@ -487,7 +487,7 @@ def get_training_config():
     Returns general training configuration for Model A.
     """
     return {
-        'batch_size': 32,  # Increased for A100 (was 4, now utilizing GPU properly)
+        'batch_size': 16,
         'learning_rate': 1e-4,
         'num_epochs': 50,
         'chunk_duration': 1.0,  # 1 second chunks
@@ -495,7 +495,23 @@ def get_training_config():
         'device': 'cuda' if torch.cuda.is_available() else 'cpu'
     }
 
-def get_overfit_config(chunk_duration=4.0, num_layers=4):
+def get_training_config_lstm():
+    """
+    Returns training configuration for the full LSTM model.
+    """
+    config = get_training_config().copy()
+    config['batch_size'] = 16
+    return config
+
+def get_training_config_unet():
+    """
+    Returns training configuration for the U-Net model (smaller batch for VRAM).
+    """
+    config = get_training_config().copy()
+    config['batch_size'] = 8
+    return config
+
+def get_overfit_config(chunk_duration=4.0, num_layers=4): #why needed?
     """
     Overfit configuration with flexibility for different model sizes.
     
@@ -1479,19 +1495,20 @@ def evaluate_with_song_selector(model, processor, data_dir, sr=22050, device='cp
 # ===============================================================================
 
 def initialize_model_a_lstm(device='cuda'):
-    """Initialize Model A (LSTM) with default configuration."""
+    """Initialize Model A (LSTM) with full configuration."""
     from . import model_A as ma
     import torch.optim as optim
     import torch.nn as nn
     
     processor = AudioProcessor(device=device)
-    model = ma.CompactLSTMMasking(
+    model = ma.SpectrogramMaskingLSTM(
         freq_bins=1025,
-        hidden_size=256,
-        num_layers=1,
-        dropout=0.2
+        hidden_size=512,
+        num_layers=2,
+        dropout=0.3,
+        bidirectional=True
     ).to(device)
-    optimizer = optim.Adam(model.parameters(), lr=get_training_config()['learning_rate'])
+    optimizer = optim.Adam(model.parameters(), lr=get_training_config_lstm()['learning_rate'])
     loss_fn = nn.MSELoss()
     
     return model, processor, optimizer, loss_fn
@@ -1507,12 +1524,12 @@ def initialize_model_a_unet(device='cuda'):
     model = ma.TimeFrequencyDomainUNet(
         in_channels=1,
         out_channels=1,
-        base_filters=64,
+        base_filters=48,
         num_layers=4,
         batchnorm=True,
         dropout=0.1
     ).to(device)
-    optimizer = optim.Adam(model.parameters(), lr=get_training_config()['learning_rate'])
+    optimizer = optim.Adam(model.parameters(), lr=get_training_config_unet()['learning_rate'])
     loss_fn = nn.MSELoss()
     
     return model, processor, optimizer, loss_fn

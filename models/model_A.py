@@ -288,7 +288,7 @@ def get_unet_config():
         'model_type': 'unet',
         'in_channels': 1,
         'out_channels': 1,
-        'base_filters': 64,
+        'base_filters': 48,
         'num_layers': 4,
         'batchnorm': True,
         'dropout': 0.1
