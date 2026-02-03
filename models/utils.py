@@ -487,7 +487,7 @@ def get_training_config():
     Returns general training configuration for Model A.
     """
     return {
-        'batch_size': 4,  # Reduced from 16 to fit in VRAM (was causing OOM with batch_size=16)
+        'batch_size': 32,  # Increased for A100 (was 4, now utilizing GPU properly)
         'learning_rate': 1e-4,
         'num_epochs': 50,
         'chunk_duration': 1.0,  # 1 second chunks
@@ -990,7 +990,16 @@ def get_data_loaders(data_dir, stage='stage1', split='train', batch_size=16):
         raise FileNotFoundError(f"No data found in {data_root}")
     
     dataset = StandardDataset(mix_files, tgt_files)
-    loader = DataLoader(dataset, batch_size=batch_size, shuffle=(split=='train'))
+    
+    # Optimized DataLoader settings for GPU training
+    loader = DataLoader(
+        dataset, 
+        batch_size=batch_size, 
+        shuffle=(split=='train'),
+        num_workers=4,              # Parallel data loading
+        pin_memory=True,            # Faster CPU->GPU transfer
+        persistent_workers=True     # Keep workers alive between epochs
+    )
     
     return loader
 
