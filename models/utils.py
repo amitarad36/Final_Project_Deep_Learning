@@ -60,15 +60,33 @@ class UniversalTrainer:
         self.history = {'train_loss': [], 'val_loss': []}
         self.best_val_loss = float('inf')
 
-    def train_epoch(self, epoch_idx):
+    def train_epoch(self, epoch_idx, num_epochs):
         """
         Trains for one epoch and returns average loss.
         Implements: mask is applied in linear domain, loss is computed in log domain (Option 3).
         """
         self.model.train()
         total_loss = 0
-        # No batch-level progress bar to reduce verbosity in Colab
-        for batch in self.train_loader:
+        batch_count = 0
+        
+        # Detect notebook environment for appropriate tqdm
+        def _in_notebook():
+            try:
+                from IPython import get_ipython
+                shell = get_ipython().__class__.__name__
+                return shell == 'ZMQInteractiveShell'
+            except:
+                return False
+        
+        if _in_notebook():
+            from tqdm.notebook import tqdm as tqdm_bar
+        else:
+            from tqdm import tqdm as tqdm_bar
+        
+        # Progress bar for this epoch
+        pbar = tqdm_bar(self.train_loader, desc=f"Epoch {epoch_idx}/{num_epochs}", leave=True)
+        
+        for batch in pbar:
             mix = batch['mix'].to(self.device)
             tgt = batch['tgt'].to(self.device)
             if self.input_type == 'spectrogram':
@@ -86,6 +104,11 @@ class UniversalTrainer:
                 loss.backward()
                 self.optimizer.step()
                 total_loss += loss.item()
+                batch_count += 1
+                # Update progress bar with running average loss every 10 batches
+                if batch_count % 10 == 0:
+                    avg_loss = total_loss / batch_count
+                    pbar.set_postfix({'loss': f"{avg_loss:.4f}"})
             else:
                 self.optimizer.zero_grad()
                 output = self.model(mix)
@@ -93,6 +116,11 @@ class UniversalTrainer:
                 loss.backward()
                 self.optimizer.step()
                 total_loss += loss.item()
+                batch_count += 1
+                # Update progress bar with running average loss every 10 batches
+                if batch_count % 10 == 0:
+                    avg_loss = total_loss / batch_count
+                    pbar.set_postfix({'loss': f"{avg_loss:.4f}"})
         return total_loss / len(self.train_loader)
 
     def validate(self):
@@ -129,24 +157,7 @@ class UniversalTrainer:
         Trains the model for a given number of epochs and saves the best checkpoint.
         Returns training history.
         """
-        def _in_notebook():
-            try:
-                from IPython import get_ipython
-                shell = get_ipython().__class__.__name__
-                if shell == 'ZMQInteractiveShell':
-                    return True
-                else:
-                    return False
-            except Exception:
-                return False
-
-        if _in_notebook():
-            from tqdm.notebook import tqdm as tqdm_bar
-        else:
-            from tqdm import tqdm as tqdm_bar
-
         epochs_no_improve = 0
-        global_pbar = tqdm_bar(range(num_epochs), desc="Total Progress")
         # Create a subfolder for this training run based on save_path
         import os
         epoch_dir = None
@@ -158,8 +169,13 @@ class UniversalTrainer:
 
         best_epoch = 0
         best_train_loss = None
-        for epoch in global_pbar:
-            train_loss = self.train_epoch(epoch + 1)
+        
+        print(f"\n{'='*60}")
+        print(f"Training: {num_epochs} epochs")
+        print(f"{'='*60}\n")
+        
+        for epoch in range(num_epochs):
+            train_loss = self.train_epoch(epoch + 1, num_epochs)
             val_loss = self.validate()
             
             # Clear CUDA cache periodically to free up memory
@@ -168,9 +184,10 @@ class UniversalTrainer:
             
             self.history['train_loss'].append(train_loss)
             self.history['val_loss'].append(val_loss)
-            global_pbar.set_postfix({'Train': f"{train_loss:.4f}", 'Val': f"{val_loss:.4f}"})
-            # Print every epoch
-            print(f"Epoch {epoch+1}: Train {train_loss:.5f} | Val {val_loss:.5f}")
+            
+            # Print summary for this epoch
+            print(f"Epoch {epoch+1}/{num_epochs} Complete → Train: {train_loss:.5f} | Val: {val_loss:.5f}")
+            
             # Live logging to file (every epoch)
             if log_file_path:
                 try:
