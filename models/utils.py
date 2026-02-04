@@ -729,13 +729,13 @@ def demo_separation_sample(
 
     n_samples = sr * duration
     mix_wav = np.load(mix_files[song_num])[:n_samples]
-    tgt_wav = np.load(tgt_files[song_num])[:n_samples]
+    tgt_instrumental_wav = np.load(tgt_files[song_num])[:n_samples]  # Ground truth instruments (target)
 
+    # Convert to spectrograms
     mix_mag, mix_phase = processor.to_spectrogram(torch.tensor(mix_wav))
-    tgt_mag, tgt_phase = processor.to_spectrogram(torch.tensor(tgt_wav))
-    show_spectrogram(mix_mag, title="Mixture Spectrogram (6 sec)")
-    show_spectrogram(tgt_mag, title="Target Spectrogram (6 sec)")
+    tgt_instrumental_mag, _ = processor.to_spectrogram(torch.tensor(tgt_instrumental_wav))
 
+    # Model prediction
     model.eval()
     with torch.no_grad():
         if mix_mag.dim() == 2:
@@ -750,25 +750,29 @@ def demo_separation_sample(
         mask = model(mix_mag_in)
         if mask.shape != mix_mag_in.shape:
             mask = mask[:, :, :mix_mag_in.shape[2], :mix_mag_in.shape[3]]
-        est_mag = mask.squeeze(0).squeeze(0) * mix_mag.to(device)
-        est_wav = processor.to_waveform(est_mag.cpu(), mix_phase.cpu())
+        
+        # Predicted instruments (what the model outputs directly now)
+        pred_instrumental_mag = mask.squeeze(0).squeeze(0) * mix_mag.to(device)
+        pred_instrumental_wav = processor.to_waveform(pred_instrumental_mag.cpu(), mix_phase.cpu())
 
-    show_spectrogram(est_mag.cpu(), title="Predicted Spectrogram (6 sec)")
+    # Display spectrograms
+    show_spectrogram(mix_mag, title="1. Mixture Spectrogram (Vocals + Instruments)")
+    show_spectrogram(tgt_instrumental_mag, title="2. Ground Truth Instruments (Target)")
+    show_spectrogram(pred_instrumental_mag.cpu(), title="3. Predicted Instruments (Model Output - Karaoke)")
 
     if play_audio_output:
-        play_audio(mix_wav, sr=sr, title="Mixture Audio (6 sec)")
-        play_audio(tgt_wav, sr=sr, title="Target Audio (6 sec)")
-        play_audio(est_wav, sr=sr, title="Predicted Audio (6 sec)")
+        play_audio(mix_wav, sr=sr, title="1. Mixture Audio (Vocals + Instruments)")
+        play_audio(tgt_instrumental_wav, sr=sr, title="2. Ground Truth Instruments (Target)")
+        play_audio(pred_instrumental_wav, sr=sr, title="3. Predicted Instruments (Model Output - Karaoke)")
 
     return {
         "mix_wav": mix_wav,
-        "tgt_wav": tgt_wav,
-        "est_wav": est_wav,
+        "tgt_instrumental_wav": tgt_instrumental_wav,
+        "pred_instrumental_wav": pred_instrumental_wav,
         "mix_mag": mix_mag,
-        "tgt_mag": tgt_mag,
-        "est_mag": est_mag,
+        "tgt_instrumental_mag": tgt_instrumental_mag,
+        "pred_instrumental_mag": pred_instrumental_mag,
         "mix_phase": mix_phase,
-        "tgt_phase": tgt_phase,
     }
 
 # ==============================================================================
@@ -901,14 +905,14 @@ def preprocess_musdb18(
             
             if stage == 'stage1':
                 # STAGE 1: Simple 2-source separation (vocals + other only)
-                # Easier curriculum step: learn to separate just 2 sources
+                # Model learns to OUTPUT the INSTRUMENTS (other) directly
                 mixture = 0.50 * vocals_chunk + 0.50 * other_chunk
-                target = vocals_chunk
+                target = other_chunk  # Target: instruments/other
             else:
                 # STAGE 2: Complex 4-source separation (vocals vs all accompaniment)
-                # Harder task: vocals competing with drums, bass, and other
+                # Model learns to OUTPUT the ACCOMPANIMENT (drums+bass+other) directly
                 mixture = 0.40 * vocals_chunk + 0.60 * accompaniment_chunk
-                target = vocals_chunk
+                target = accompaniment_chunk  # Target: all instruments
             
             # Normalize to prevent clipping
             max_val = max(np.abs(mixture).max(), np.abs(target).max())
