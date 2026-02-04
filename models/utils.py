@@ -73,8 +73,14 @@ class UniversalTrainer:
         pbar = tqdm_bar(self.train_loader, desc=f"Epoch {epoch_idx}/{num_epochs}", leave=True)
         
         for batch in pbar:
-            mix = batch['mix'].to(self.device) if not isinstance(batch['mix'], tuple) else batch['mix']
-            tgt = batch['tgt'].to(self.device) if not isinstance(batch['tgt'], tuple) else batch['tgt']
+            mix = batch['mix']
+            tgt = batch['tgt']
+            
+            # Move to device if tensor, leave tuples as-is
+            if isinstance(mix, torch.Tensor):
+                mix = mix.to(self.device)
+            if isinstance(tgt, torch.Tensor):
+                tgt = tgt.to(self.device)
             
             if self.input_type == 'spectrogram':
                 # Check if data is already spectrograms (tuple of magnitude and phase)
