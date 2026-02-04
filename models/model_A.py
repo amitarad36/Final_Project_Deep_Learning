@@ -184,24 +184,36 @@ class SpectrogramMaskingLSTM(nn.Module):
         Returns:
             mask: Predicted mask of shape (batch, 1, freq_bins, time_steps)
         """
-        batch_size, _, freq_bins, time_steps = x.shape
+        # Handle input shape robustly - ensure it's 4D
+        if x.ndim == 3:
+            # If missing channel dimension, add it
+            x = x.unsqueeze(1)
+        elif x.ndim != 4:
+            raise ValueError(f"Expected 3D or 4D input, got shape {x.shape}")
+        
+        batch_size, num_channels, freq_bins, time_steps = x.shape
         
         # Remove channel dimension: (batch, freq_bins, time_steps)
-        x = x.squeeze(1)
+        if num_channels == 1:
+            x = x.squeeze(1)
+        else:
+            # If multiple channels, take first one
+            x = x[:, 0, :, :]
         
-        # Batch normalization
-        x_normalized = self.batch_norm(x)
+        # Batch normalization: reshape to (batch*time_steps, freq_bins) for BatchNorm1d
+        # This avoids shape issues across different PyTorch versions
+        x_reshaped = x.reshape(-1, freq_bins)  # (batch*time, freq)
+        x_normalized = self.batch_norm(x_reshaped)  # Apply norm
+        x_normalized = x_normalized.reshape(batch_size, time_steps, freq_bins)  # (batch, time, freq)
         
-        # Transpose for LSTM: (batch, time_steps, freq_bins)
-        x_transposed = x_normalized.transpose(1, 2)
-        
+        # Transpose for LSTM: (batch, time_steps, freq_bins) - already in correct shape
         # LSTM processing
-        lstm_out, _ = self.lstm(x_transposed)
+        lstm_out, _ = self.lstm(x_normalized)
         
         # Embedding layer to generate mask
         mask = self.embedding(lstm_out)
         
-        # Transpose back to spectrogram format
+        # Transpose back to spectrogram format: (batch, freq_bins, time_steps)
         mask = mask.transpose(1, 2)
         
         # Add channel dimension: (batch, 1, freq_bins, time_steps)
@@ -250,19 +262,30 @@ class CompactLSTMMasking(nn.Module):
         Forward pass for compact model.
         
         Args:
-            x: (batch, 1, freq_bins, time_steps)
+            x: (batch, 1, freq_bins, time_steps) or (batch, freq_bins, time_steps)
         
         Returns:
             mask: (batch, 1, freq_bins, time_steps)
         """
+        # Handle input shape robustly - ensure it's 4D
+        if x.ndim == 3:
+            # If missing channel dimension, add it
+            x = x.unsqueeze(1)
+        elif x.ndim != 4:
+            raise ValueError(f"Expected 3D or 4D input, got shape {x.shape}")
+        
+        batch_size, num_channels, freq_bins, time_steps = x.shape
+        
         # Remove channel: (batch, freq_bins, time_steps)
-        x = x.squeeze(1)
+        if num_channels == 1:
+            x = x.squeeze(1)
+        else:
+            x = x[:, 0, :, :]
         
-        # Batch norm
-        x = self.batch_norm(x)
-        
-        # Transpose for LSTM: (batch, time_steps, freq_bins)
-        x = x.transpose(1, 2)
+        # Batch norm: reshape to avoid version compatibility issues
+        x_reshaped = x.reshape(-1, freq_bins)  # (batch*time, freq)
+        x = self.batch_norm(x_reshaped)  # Apply norm
+        x = x.reshape(batch_size, time_steps, freq_bins)  # (batch, time, freq)
         
         # LSTM
         x, _ = self.lstm(x)
