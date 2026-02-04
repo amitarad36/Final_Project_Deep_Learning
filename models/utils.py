@@ -1028,7 +1028,6 @@ def _collate_dict_batch(batch):
             'mix': (mix_mag, mix_ph),
             'tgt': (tgt_mag, tgt_ph)
         }
-        }
     else:
         # Waveforms: simple stack
         return {
