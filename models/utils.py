@@ -846,14 +846,20 @@ def get_data_loaders(data_dir, stage='stage1', split='train', batch_size=16):
     
     dataset = StandardDataset(mix_files, tgt_files)
     
+    # Smart num_workers: Reduce on GPU (Colab has limited CPU cores)
+    # Local CPU can use more workers, GPU should use fewer to avoid contention
+    import torch
+    device_is_gpu = torch.cuda.is_available()
+    num_workers = 2 if device_is_gpu else 4
+    
     # Optimized DataLoader settings for GPU training
     loader = DataLoader(
         dataset, 
         batch_size=batch_size, 
         shuffle=(split=='train'),
-        num_workers=4,              # Parallel data loading
-        pin_memory=True,            # Faster CPU->GPU transfer
-        persistent_workers=True     # Keep workers alive between epochs
+        num_workers=num_workers,       # 2 on GPU (Colab), 4 on CPU (local)
+        pin_memory=True,               # Faster CPU->GPU transfer
+        persistent_workers=True        # Keep workers alive between epochs
     )
     
     return loader
