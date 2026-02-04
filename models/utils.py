@@ -745,6 +745,8 @@ def preprocess_musdb18(
     print("🔄 Processing tracks into chunks...\n")
     all_chunks = []  # Will store (stage, mixture, target) tuples
     
+    import gc
+    
     for track_idx, track in enumerate(tqdm(all_tracks, desc="Processing tracks")):
         # Load all stems
         vocals = track.targets['vocals'].audio  # Shape: (samples, 2) stereo
@@ -827,9 +829,17 @@ def preprocess_musdb18(
                 ))
             else:
                 all_chunks.append((stage, mixture.astype(np.float32), target.astype(np.float32)))
+        
+        # Clean up memory every 10 tracks to prevent RAM overflow
+        if (track_idx + 1) % 10 == 0:
+            gc.collect()
     
     # Shuffle and split chunks
     print(f"\n📊 Total chunks created: {len(all_chunks)}")
+    
+    # Clean memory before shuffling
+    gc.collect()
+    
     np.random.shuffle(all_chunks)
     
     # Separate by stage
@@ -873,7 +883,16 @@ def preprocess_musdb18(
     
     print("💾 Saving organized data...")
     stage1_counts = split_and_save(stage1_chunks, 'stage1')
+    
+    # Free memory after Stage 1 save
+    del stage1_chunks
+    gc.collect()
+    
     stage2_counts = split_and_save(stage2_chunks, 'stage2')
+    
+    # Free memory after Stage 2 save
+    del stage2_chunks, all_chunks
+    gc.collect()
     
     # Summary
     print(f"\n{'='*70}")
