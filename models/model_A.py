@@ -92,10 +92,10 @@ class TimeFrequencyDomainUNet(nn.Module):
     def forward(self, x):
         _, _, h, w = x.shape
         multiple = 2 ** self.num_layers
-        pad_h = (multiple - (h % multiple)) % multiple
-        pad_w = (multiple - (w % multiple)) % multiple
+        pad_h = int((multiple - (h % multiple)) % multiple)
+        pad_w = int((multiple - (w % multiple)) % multiple)
         if pad_h > 0 or pad_w > 0:
-            x = torch.nn.functional.pad(x, (0, pad_w, 0, pad_h))
+            x = torch.nn.functional.pad(x, (0, pad_w, 0, pad_h), mode="constant", value=0.0)
         skips = []
         for enc in self.encoders:
             x, p = enc(x)

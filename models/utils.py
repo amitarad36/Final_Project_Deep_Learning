@@ -321,7 +321,14 @@ class AudioProcessor:
         if isinstance(waveform, np.ndarray):
             waveform = torch.from_numpy(waveform)
         elif isinstance(waveform, (list, tuple)):
-            waveform = torch.tensor(waveform)
+            if len(waveform) == 0:
+                waveform = torch.empty(0)
+            elif isinstance(waveform[0], torch.Tensor):
+                waveform = torch.stack(waveform)
+            elif isinstance(waveform[0], np.ndarray):
+                waveform = torch.from_numpy(np.stack(waveform))
+            else:
+                waveform = torch.tensor(waveform)
         if waveform.ndim == 1:
             waveform = waveform.unsqueeze(0) # Add channel dim
             
@@ -1077,7 +1084,7 @@ def get_data_loaders(data_dir, stage='stage1', split='train', batch_size=16, num
         batch_size=batch_size, 
         shuffle=(split=='train'),
         num_workers=num_workers,       # 0 on GPU (Colab), 4 on CPU (local)
-        pin_memory=True,               # Faster CPU->GPU transfer
+        pin_memory=torch.cuda.is_available(),  # Only pin when GPU available
         persistent_workers=(num_workers > 0),  # Only if workers > 0
         collate_fn=_collate_dict_batch  # Use module-level collate function (picklable)
     )
