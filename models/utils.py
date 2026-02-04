@@ -320,6 +320,8 @@ class AudioProcessor:
         # Ensure tensor and correct device
         if isinstance(waveform, np.ndarray):
             waveform = torch.from_numpy(waveform)
+        elif isinstance(waveform, (list, tuple)):
+            waveform = torch.tensor(waveform)
         if waveform.ndim == 1:
             waveform = waveform.unsqueeze(0) # Add channel dim
             
