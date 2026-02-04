@@ -73,13 +73,22 @@ class UniversalTrainer:
         pbar = tqdm_bar(self.train_loader, desc=f"Epoch {epoch_idx}/{num_epochs}", leave=True)
         
         for batch in pbar:
-            mix = batch['mix'].to(self.device)
-            tgt = batch['tgt'].to(self.device)
+            mix = batch['mix'].to(self.device) if not isinstance(batch['mix'], tuple) else batch['mix']
+            tgt = batch['tgt'].to(self.device) if not isinstance(batch['tgt'], tuple) else batch['tgt']
+            
             if self.input_type == 'spectrogram':
-                mix_log, _ = self.processor.to_spectrogram(mix)
-                tgt_log, _ = self.processor.to_spectrogram(tgt)
-                mix_log = mix_log.unsqueeze(1)
-                tgt_log = tgt_log.unsqueeze(1)
+                # Check if data is already spectrograms (tuple of magnitude and phase)
+                if isinstance(mix, tuple):
+                    # Pre-computed spectrograms - already in log magnitude format
+                    mix_log = mix[0].to(self.device).unsqueeze(1)  # magnitude
+                    tgt_log = tgt[0].to(self.device).unsqueeze(1)  # magnitude
+                else:
+                    # Waveforms - need to convert to spectrograms
+                    mix_log, _ = self.processor.to_spectrogram(mix)
+                    tgt_log, _ = self.processor.to_spectrogram(tgt)
+                    mix_log = mix_log.unsqueeze(1)
+                    tgt_log = tgt_log.unsqueeze(1)
+                
                 self.optimizer.zero_grad()
                 mask = self.model(mix_log)
                 if mask.shape != mix_log.shape:
@@ -118,13 +127,22 @@ class UniversalTrainer:
         total_loss = 0
         with torch.no_grad():
             for batch in self.val_loader:
-                mix = batch['mix'].to(self.device)
-                tgt = batch['tgt'].to(self.device)
+                mix = batch['mix'].to(self.device) if not isinstance(batch['mix'], tuple) else batch['mix']
+                tgt = batch['tgt'].to(self.device) if not isinstance(batch['tgt'], tuple) else batch['tgt']
+                
                 if self.input_type == 'spectrogram':
-                    mix_log, _ = self.processor.to_spectrogram(mix)
-                    tgt_log, _ = self.processor.to_spectrogram(tgt)
-                    mix_log = mix_log.unsqueeze(1)
-                    tgt_log = tgt_log.unsqueeze(1)
+                    # Check if data is already spectrograms (tuple of magnitude and phase)
+                    if isinstance(mix, tuple):
+                        # Pre-computed spectrograms - already in log magnitude format
+                        mix_log = mix[0].to(self.device).unsqueeze(1)  # magnitude
+                        tgt_log = tgt[0].to(self.device).unsqueeze(1)  # magnitude
+                    else:
+                        # Waveforms - need to convert to spectrograms
+                        mix_log, _ = self.processor.to_spectrogram(mix)
+                        tgt_log, _ = self.processor.to_spectrogram(tgt)
+                        mix_log = mix_log.unsqueeze(1)
+                        tgt_log = tgt_log.unsqueeze(1)
+                    
                     mask = self.model(mix_log)
                     if mask.shape != mix_log.shape:
                         mask = mask[:, :, :mix_log.shape[2], :mix_log.shape[3]]
@@ -346,12 +364,19 @@ class AudioProcessor:
 # Robust waveform dataset for general use
 class StandardDataset(Dataset):
     """
-    Loads waveform pairs from cached .npy files for training/validation.
+    Loads pairs from cached files for training/validation.
+    Supports both waveforms (.npy) and spectrograms (.npz).
     Returns dicts with keys 'mix' and 'tgt'.
     """
     def __init__(self, mix_files, tgt_files):
         self.mix_files = list(mix_files)
         self.tgt_files = list(tgt_files)
+        
+        # Auto-detect file format from first file
+        if len(self.mix_files) > 0:
+            self.is_spectrogram = str(self.mix_files[0]).endswith('.npz')
+        else:
+            self.is_spectrogram = False
 
     def __len__(self):
         """
@@ -361,14 +386,33 @@ class StandardDataset(Dataset):
 
     def __getitem__(self, idx):
         """
-        Loads mixture and target waveforms, returns as tensors in dict.
+        Loads mixture and target, returns as tensors in dict.
+        For spectrograms: returns (magnitude, phase) tuple
+        For waveforms: returns single tensor
         """
-        m = np.load(self.mix_files[idx])
-        t = np.load(self.tgt_files[idx])
-        return {
-            'mix': torch.tensor(m, dtype=torch.float32),
-            'tgt': torch.tensor(t, dtype=torch.float32)
-        }
+        if self.is_spectrogram:
+            # Load spectrograms from .npz files
+            mix_data = np.load(self.mix_files[idx])
+            tgt_data = np.load(self.tgt_files[idx])
+            
+            return {
+                'mix': (
+                    torch.tensor(mix_data['magnitude'], dtype=torch.float32),
+                    torch.tensor(mix_data['phase'], dtype=torch.float32)
+                ),
+                'tgt': (
+                    torch.tensor(tgt_data['magnitude'], dtype=torch.float32),
+                    torch.tensor(tgt_data['phase'], dtype=torch.float32)
+                )
+            }
+        else:
+            # Load waveforms from .npy files
+            m = np.load(self.mix_files[idx])
+            t = np.load(self.tgt_files[idx])
+            return {
+                'mix': torch.tensor(m, dtype=torch.float32),
+                'tgt': torch.tensor(t, dtype=torch.float32)
+            }
 
 # Chunked dataset for fixed-length segments with overlap
 # ==============================================================================
@@ -624,7 +668,8 @@ def preprocess_musdb18(
     stage1_ratio=0.7,
     train_ratio=0.7,
     val_ratio=0.15,
-    test_ratio=0.15
+    test_ratio=0.15,
+    save_spectrograms=True  # NEW: Save spectrograms instead of waveforms
 ):
     """
     Complete preprocessing pipeline for MUSDB18 dataset.
@@ -634,7 +679,7 @@ def preprocess_musdb18(
     2. Chunk all full-length songs into training segments
     3. Create Stage 1 (70%) and Stage 2 (30%) curriculum splits
     4. Further split each stage into train/val/test
-    5. Save organized data ready for DataLoaders
+    5. Save organized data ready for DataLoaders (as spectrograms or waveforms)
     
     Args:
         musdb18_path: Path to extracted musdb18 folder
@@ -646,6 +691,7 @@ def preprocess_musdb18(
         train_ratio: Ratio for training set
         val_ratio: Ratio for validation set
         test_ratio: Ratio for test set
+        save_spectrograms: If True, save spectrograms instead of waveforms (10x faster training)
         
     Returns:
         Dictionary with file counts for each split
@@ -653,9 +699,16 @@ def preprocess_musdb18(
     import musdb
     from tqdm import tqdm
     
+    # Initialize processor if saving spectrograms
+    if save_spectrograms:
+        processor = AudioProcessor(device='cpu')  # Use CPU for preprocessing
+    
     print(f"\n{'='*70}")
     print("MUSDB18 PREPROCESSING PIPELINE")
     print(f"{'='*70}\n")
+    
+    data_format = "spectrograms" if save_spectrograms else "waveforms"
+    print(f"💾 Output format: {data_format}")
     
     # Load MUSDB18
     print(f"📂 Loading MUSDB18 from: {musdb18_path}")
@@ -757,7 +810,23 @@ def preprocess_musdb18(
                 mixture = mixture / max_val
                 target = target / max_val
             
-            all_chunks.append((stage, mixture.astype(np.float32), target.astype(np.float32)))
+            # Convert to spectrograms if requested
+            if save_spectrograms:
+                # Convert waveforms to spectrograms
+                mix_tensor = torch.from_numpy(mixture.astype(np.float32))
+                tgt_tensor = torch.from_numpy(target.astype(np.float32))
+                
+                mix_mag, mix_phase = processor.to_spectrogram(mix_tensor)
+                tgt_mag, tgt_phase = processor.to_spectrogram(tgt_tensor)
+                
+                # Store spectrograms as numpy arrays
+                all_chunks.append((
+                    stage,
+                    mix_mag.numpy(), mix_phase.numpy(),
+                    tgt_mag.numpy(), tgt_phase.numpy()
+                ))
+            else:
+                all_chunks.append((stage, mixture.astype(np.float32), target.astype(np.float32)))
     
     # Shuffle and split chunks
     print(f"\n📊 Total chunks created: {len(all_chunks)}")
@@ -787,9 +856,16 @@ def preprocess_musdb18(
             mix_dir = stage_dirs[f"{stage_name}_{split_name}_mixture"]
             tgt_dir = stage_dirs[f"{stage_name}_{split_name}_target"]
             
-            for idx, (_, mixture, target) in enumerate(split_chunks):
-                np.save(mix_dir / f"{idx:06d}.npy", mixture)
-                np.save(tgt_dir / f"{idx:06d}.npy", target)
+            if save_spectrograms:
+                # Save spectrograms as .npz files (magnitude + phase)
+                for idx, (_, mix_mag, mix_phase, tgt_mag, tgt_phase) in enumerate(split_chunks):
+                    np.savez(mix_dir / f"{idx:06d}.npz", magnitude=mix_mag, phase=mix_phase)
+                    np.savez(tgt_dir / f"{idx:06d}.npz", magnitude=tgt_mag, phase=tgt_phase)
+            else:
+                # Save waveforms as .npy files
+                for idx, (_, mixture, target) in enumerate(split_chunks):
+                    np.save(mix_dir / f"{idx:06d}.npy", mixture)
+                    np.save(tgt_dir / f"{idx:06d}.npy", target)
             
             counts[split_name] = len(split_chunks)
         
@@ -839,8 +915,15 @@ def get_data_loaders(data_dir, stage='stage1', split='train', batch_size=16, num
         DataLoader ready for training/evaluation
     """
     data_root = Path(data_dir) / stage / split
-    mix_files = sorted((data_root / 'mixture').glob("*.npy"))
-    tgt_files = sorted((data_root / 'target').glob("*.npy"))
+    
+    # Try both spectrogram (.npz) and waveform (.npy) files
+    mix_files = sorted((data_root / 'mixture').glob("*.npz"))
+    tgt_files = sorted((data_root / 'target').glob("*.npz"))
+    
+    if len(mix_files) == 0:
+        # Fallback to waveform files
+        mix_files = sorted((data_root / 'mixture').glob("*.npy"))
+        tgt_files = sorted((data_root / 'target').glob("*.npy"))
     
     if len(mix_files) == 0:
         raise FileNotFoundError(f"No data found in {data_root}")
