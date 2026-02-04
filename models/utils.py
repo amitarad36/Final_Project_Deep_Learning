@@ -1,11 +1,15 @@
 import numpy as np
 import torch
+import torch.nn as nn
+import torch.optim as optim
 import os
-from torch.utils.data import Dataset
 from pathlib import Path
+from torch.utils.data import Dataset, DataLoader
 import matplotlib.pyplot as plt
 from IPython.display import Audio, display
 import librosa
+import musdb
+from tqdm import tqdm
 
 # Configure CUDA memory to avoid fragmentation
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
@@ -17,24 +21,6 @@ try:
         get_ipython().run_line_magic('matplotlib', 'inline')
 except:
     pass
-
-# ===============================================================================
-# CHECKPOINT UTILITIES
-# ===============================================================================
-def check_checkpoint(checkpoint_path, checkpoint_name="Checkpoint"):
-    """
-    Check if a checkpoint exists and print status.
-    Returns True if checkpoint exists, False otherwise.
-    """
-    checkpoint_path = Path(checkpoint_path)
-    if checkpoint_path.exists():
-        print(f"✅ {checkpoint_name} found: {checkpoint_path}")
-        print(f"   Loading existing checkpoint instead of retraining.")
-        return True
-    else:
-        print(f"⏳ {checkpoint_name} not found: {checkpoint_path}")
-        print(f"   Training will start...")
-        return False
 
 # ==============================================================================
 # Universal Trainer
@@ -159,7 +145,6 @@ class UniversalTrainer:
         """
         epochs_no_improve = 0
         # Create a subfolder for this training run based on save_path
-        import os
         epoch_dir = None
         if save_path is not None:
             base_dir = os.path.dirname(save_path)
@@ -278,7 +263,6 @@ def calculate_metrics(reference, estimate, sr=22050):
     Returns a dict of metrics.
     """
     import museval
-    import numpy as np
     # museval expects shape (sources, samples)
     reference = np.atleast_2d(reference)
     estimate = np.atleast_2d(estimate)
@@ -359,36 +343,7 @@ class AudioProcessor:
 # 2. DATASET
 # ==============================================================================
 
-# Dataset for loading spectrogram pairs from cached .npy files
-class SpectrogramDataset(Dataset):
-    """
-    Loads spectrogram pairs from cached .npy files.
-    Returns dicts with keys 'mix' and 'tgt'.
-    """
-    def __init__(self, mixture_files, target_files, limit=None):
-        self.mixture_files = sorted(list(mixture_files))[:limit] if limit else sorted(list(mixture_files))
-        self.target_files = sorted(list(target_files))[:limit] if limit else sorted(list(target_files))
-
-    def __len__(self):
-        """
-        Returns number of samples.
-        """
-        return len(self.mixture_files)
-
-    def __getitem__(self, idx):
-        """
-        Loads mixture and target spectrograms, returns as tensors in dict.
-        """
-        mix = np.load(self.mixture_files[idx])
-        tgt = np.load(self.target_files[idx])
-        min_len = min(len(mix), len(tgt))
-        mix, tgt = mix[:min_len], tgt[:min_len]
-        return {
-            'mix': torch.from_numpy(mix).float(),
-            'tgt': torch.from_numpy(tgt).float()
-        }
-
-# Robust waveform dataset for general use (moved from notebook)
+# Robust waveform dataset for general use
 class StandardDataset(Dataset):
     """
     Loads waveform pairs from cached .npy files for training/validation.
@@ -416,72 +371,9 @@ class StandardDataset(Dataset):
         }
 
 # Chunked dataset for fixed-length segments with overlap
-class ChunkedDataset(Dataset):
-    """
-    Splits variable-length audio files into fixed-length chunks with overlap.
-    Useful for training on consistent segment sizes (e.g., 1 second).
-    """
-    def __init__(self, mix_files, tgt_files, chunk_duration=1.0, overlap=0.3, sr=22050):
-        """
-        Args:
-            mix_files: List of mixture file paths
-            tgt_files: List of target file paths
-            chunk_duration: Length of each chunk in seconds
-            overlap: Overlap between chunks in seconds
-            sr: Sample rate
-        """
-        self.mix_files = list(mix_files)
-        self.tgt_files = list(tgt_files)
-        self.chunk_size = int(chunk_duration * sr)
-        self.hop_size = int((chunk_duration - overlap) * sr)
-        self.sr = sr
-        
-        # Pre-compute chunk indices
-        self.chunks = []
-        for file_idx, (mix_path, tgt_path) in enumerate(zip(self.mix_files, self.tgt_files)):
-            # Get file length
-            file_length = np.load(mix_path, mmap_mode='r').shape[0]
-            # Calculate chunk starts
-            starts = list(range(0, file_length - self.chunk_size + 1, self.hop_size))
-            for start in starts:
-                self.chunks.append((file_idx, start))
-    
-    def __len__(self):
-        return len(self.chunks)
-    
-    def __getitem__(self, idx):
-        """
-        Returns a chunk of audio as tensors.
-        """
-        file_idx, start = self.chunks[idx]
-        end = start + self.chunk_size
-        
-        mix_full = np.load(self.mix_files[file_idx])
-        tgt_full = np.load(self.tgt_files[file_idx])
-        
-        mix_chunk = mix_full[start:end]
-        tgt_chunk = tgt_full[start:end]
-        
-        return {
-            'mix': torch.tensor(mix_chunk, dtype=torch.float32),
-            'tgt': torch.tensor(tgt_chunk, dtype=torch.float32)
-        }
-
 # ==============================================================================
 # CONFIGURATION FUNCTIONS
 # ==============================================================================
-def get_model_a_config():
-    """
-    Returns Model A (Time-Frequency Domain U-Net) architecture configuration.
-    """
-    return {
-        'n_fft': 2048,
-        'hop_length': 512,
-        'encoder_channels': [1, 16, 32, 64, 128, 256],
-        'decoder_channels': [256, 128, 64, 32, 16, 1],
-        'use_batch_norm': True
-    }
-
 def get_training_config():
     """
     Returns general training configuration for Model A.
@@ -500,7 +392,7 @@ def get_training_config_lstm():
     Returns training configuration for the full LSTM model.
     """
     config = get_training_config().copy()
-    config['batch_size'] = 16
+    config['batch_size'] = 32
     return config
 
 def get_training_config_unet():
@@ -510,28 +402,6 @@ def get_training_config_unet():
     config = get_training_config().copy()
     config['batch_size'] = 8
     return config
-
-def get_overfit_config(chunk_duration=4.0, num_layers=4): #why needed?
-    """
-    Overfit configuration with flexibility for different model sizes.
-    
-    Args:
-        chunk_duration: Audio chunk length in seconds (default 4.0)
-        num_layers: Number of U-Net layers (default 4)
-    
-    Returns:
-        Config dict with all training parameters
-    """
-    return {
-        'batch_size': 1,
-        'learning_rate': 3e-4,
-        'num_epochs': 100,
-        'chunk_duration': chunk_duration,
-        'chunk_overlap': 0.5,
-        'patience': 200,
-        'device': 'cuda' if torch.cuda.is_available() else 'cpu',
-        'num_layers': num_layers
-    }
 
 # ==============================================================================
 # HELPER FUNCTIONS
@@ -544,39 +414,6 @@ def play_audio(waveform, sr=22050, title="Audio"):
         waveform = waveform.squeeze().cpu().numpy()
     print(f"{title}:")
     display(Audio(waveform, rate=sr))
-
-def visualize_results(mix_mag, target_mag, pred_mag, title="Results"):
-    """
-    Visualizes mixture, target, and prediction spectrograms side by side.
-    """
-    fig, axes = plt.subplots(1, 3, figsize=(15, 4))
-    def show(ax, spec, name):
-        if hasattr(spec, 'cpu'):
-            spec = spec.squeeze().cpu().numpy()
-        ax.imshow(spec, aspect='auto', origin='lower', cmap='magma')
-        ax.set_title(name)
-    show(axes[0], mix_mag, "Mixture")
-    show(axes[1], target_mag, "Target")
-    show(axes[2], pred_mag, "Prediction")
-    plt.suptitle(title)
-    plt.tight_layout()
-    plt.show()
-
-# ===============================================================================
-# LOSS VISUALIZATION
-# ===============================================================================
-def plot_text_graph(history, title):
-    """
-    Print a simple text-based loss graph for quick inspection.
-    """
-    if 'train_loss' not in history or len(history['train_loss']) == 0:
-        return
-    print(f"\n {title} (Text Graph):")
-    losses = history['train_loss']
-    min_val, max_val = min(losses), max(losses)
-    for i, loss in enumerate(losses):
-        width = int(40 * (loss - min_val) / (max_val - min_val + 1e-9))
-        print(f"Ep {i+1:02d}: {loss:.4f} | {'█' * width}")
 
 # ==============================================================================
 # NOTEBOOK COMPACT HELPERS
@@ -1000,8 +837,6 @@ def get_data_loaders(data_dir, stage='stage1', split='train', batch_size=16):
     Returns:
         DataLoader ready for training/evaluation
     """
-    from torch.utils.data import DataLoader
-    
     data_root = Path(data_dir) / stage / split
     mix_files = sorted((data_root / 'mixture').glob("*.npy"))
     tgt_files = sorted((data_root / 'target').glob("*.npy"))
@@ -1027,121 +862,6 @@ def get_data_loaders(data_dir, stage='stage1', split='train', batch_size=16):
 # ==============================================================================
 # LEGACY CACHING LOGIC (Kept for backward compatibility)
 # ==============================================================================
-def prepare_curriculum_cache(mus, cache_dir="../data", sr=22050, force_rebuild=False):
-    """
-    DEPRECATED: Use preprocess_musdb18() instead.
-    
-    Generates and caches curriculum data from musdb tracks.
-    Uses realistic mixture weights based on typical music production levels.
-    Stage 1: Vocals + Other -> Other (simpler task)
-    Stage 2: Full Mix -> Other (harder task with all stems)
-    """
-    root = Path(cache_dir)
-    if not force_rebuild and root.exists() and len(list(root.glob("**/*.npy"))) > 0:
-        print(f"Cache found at {root}. Skipping generation.")
-        return
-    print(f"Generating Curriculum Cache at {root}...")
-    for stage in ["stage1", "stage2"]:
-        for type in ["mixture", "target"]:
-            (root / stage / type).mkdir(parents=True, exist_ok=True)
-    
-    # Realistic mixture weights (normalized to sum=1.0)
-    # Based on typical music production levels
-
-
-    def compare_models_on_audio_file(
-        file_path,
-        model_lstm,
-        model_unet,
-        processor_lstm,
-        processor_unet,
-        device="cpu",
-        sr=22050,
-        duration=None,
-    ):
-        """
-        Loads an audio file and runs inference with both models.
-        Plots spectrograms and plays audio for mixture and predictions.
-        """
-        if not Path(file_path).exists():
-            raise FileNotFoundError(f"Audio file not found: {file_path}")
-
-        # Load audio (mono)
-        mix_wav, _ = librosa.load(file_path, sr=sr, mono=True)
-        if duration is not None:
-            mix_wav = mix_wav[: int(sr * duration)]
-
-        # LSTM inference
-        mix_mag_lstm, mix_phase_lstm = processor_lstm.to_spectrogram(torch.tensor(mix_wav))
-        mix_mag_in = mix_mag_lstm.unsqueeze(0).unsqueeze(0).to(device)
-        model_lstm.eval()
-        with torch.no_grad():
-            mask_lstm = model_lstm(mix_mag_in)
-            if mask_lstm.shape != mix_mag_in.shape:
-                mask_lstm = mask_lstm[:, :, :mix_mag_in.shape[2], :mix_mag_in.shape[3]]
-            est_mag_lstm = mask_lstm.squeeze(0).squeeze(0) * mix_mag_lstm.to(device)
-            est_wav_lstm = processor_lstm.to_waveform(est_mag_lstm.cpu(), mix_phase_lstm.cpu())
-
-        # U-Net inference
-        mix_mag_unet, mix_phase_unet = processor_unet.to_spectrogram(torch.tensor(mix_wav))
-        mix_mag_in = mix_mag_unet.unsqueeze(0).unsqueeze(0).to(device)
-        model_unet.eval()
-        with torch.no_grad():
-            mask_unet = model_unet(mix_mag_in)
-            if mask_unet.shape != mix_mag_in.shape:
-                mask_unet = mask_unet[:, :, :mix_mag_in.shape[2], :mix_mag_in.shape[3]]
-            est_mag_unet = mask_unet.squeeze(0).squeeze(0) * mix_mag_unet.to(device)
-            est_wav_unet = processor_unet.to_waveform(est_mag_unet.cpu(), mix_phase_unet.cpu())
-
-        # Spectrograms
-        print("\n=== Spectrograms ===")
-        show_spectrogram(mix_mag_lstm, title="Mixture Spectrogram")
-        show_spectrogram(est_mag_lstm.cpu(), title="LSTM Predicted Spectrogram")
-        show_spectrogram(est_mag_unet.cpu(), title="U-Net Predicted Spectrogram")
-
-        # Audio playback
-        print("\n=== Audio Playback ===")
-        play_audio(mix_wav, sr=sr, title="Input Mixture")
-        play_audio(est_wav_lstm, sr=sr, title="LSTM Prediction")
-        play_audio(est_wav_unet, sr=sr, title="U-Net Prediction")
-
-        return {
-            "mix_wav": mix_wav,
-            "est_wav_lstm": est_wav_lstm,
-            "est_wav_unet": est_wav_unet,
-            "mix_mag": mix_mag_lstm,
-            "est_mag_lstm": est_mag_lstm,
-            "est_mag_unet": est_mag_unet,
-        }
-    weights = {
-        'vocals': 0.35,   # Vocals usually prominent
-        'drums': 0.30,    # Drums have strong presence
-        'bass': 0.20,     # Bass provides foundation
-        'other': 0.15     # Other instruments fill space
-    }
-    
-    for i, track in enumerate(mus.tracks):
-        print(f"Processing: {track.title}...", end="\r")
-        stems = {}
-        for name, stem_obj in track.targets.items():
-            audio = stem_obj.audio.T
-            resampled = librosa.resample(audio, orig_sr=track.rate, target_sr=sr)
-            stems[name] = np.mean(resampled, axis=0).astype(np.float32)
-        
-        # Stage 1: Vocals + Other -> Other (simpler curriculum step)
-        s1_mix = weights['vocals'] * stems['vocals'] + weights['other'] * stems['other']
-        # Normalize to prevent clipping
-        s1_mix = s1_mix / (weights['vocals'] + weights['other'])
-        np.save(root / "stage1/mixture" / f"{i:03d}.npy", s1_mix)
-        np.save(root / "stage1/target" / f"{i:03d}.npy", stems['other'])
-        
-        # Stage 2: Full Mix -> Other (realistic full mix)
-        # Only use stems that exist in the weights dict
-        s2_mix = sum(weights[stem] * stems[stem] for stem in stems if stem in weights)
-        np.save(root / "stage2/mixture" / f"{i:03d}.npy", s2_mix)
-        np.save(root / "stage2/target" / f"{i:03d}.npy", stems['other'])
-    print("\nCache generation complete!")
-
 def show_spectrogram(tensor, title="Spectrogram"):
     """
     Plots a tensor spectrogram (C, F, T) as a dB-scaled image.
@@ -1157,41 +877,6 @@ def show_spectrogram(tensor, title="Spectrogram"):
     plt.title(title)
     plt.tight_layout()
     plt.show()
-
-def plot_loss_history(history, title="Training Loss"):
-    """
-    Safely plots training history without crashing the kernel.
-    Works reliably on Colab with GPU.
-    """
-    # 1. Safety Check: Is there data?
-    if not history or 'train_loss' not in history or len(history['train_loss']) == 0:
-        print(f"⚠️  No training data found for {title}")
-        return
-
-    try:
-        # 2. Create Figure explicitly
-        plt.figure(figsize=(10, 5), dpi=100)
-        
-        # 3. Plot Data
-        plt.plot(history['train_loss'], label='Train Loss', linewidth=2, marker='o', markersize=4)
-        if 'val_loss' in history and len(history['val_loss']) > 0:
-            plt.plot(history['val_loss'], label='Val Loss', linewidth=2, marker='s', markersize=4, linestyle='--')
-
-        # 4. Styling
-        plt.title(title, fontsize=13, fontweight='bold')
-        plt.xlabel("Epoch", fontsize=11)
-        plt.ylabel("Loss", fontsize=11)
-        plt.legend(fontsize=10, loc='best')
-        plt.grid(True, alpha=0.3)
-        
-        # 5. Render and Close
-        plt.tight_layout()
-        plt.show()
-        plt.close('all')  # Close all figures to free memory
-    except Exception as e:
-        print(f"❌ Error plotting history: {e}")
-        import traceback
-        traceback.print_exc()
 
 # ===============================================================================
 # INFERENCE: SEPARATE FULL-LENGTH SONGS
@@ -1312,26 +997,6 @@ def separate_full_song(
     return output
 
 
-def save_separated_audio(audio, output_path, sr=22050):
-    """
-    Save separated audio to disk.
-    
-    Args:
-        audio: numpy array of audio samples
-        output_path: Path to save WAV file
-        sr: Sample rate (default 22050)
-    """
-    import soundfile as sf
-    output_path = Path(output_path)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    
-    # Normalize to prevent clipping
-    audio = audio / (np.max(np.abs(audio)) + 1e-8)
-    
-    sf.write(str(output_path), audio, sr)
-    print(f"✅ Saved: {output_path}")
-
-
 # ==============================================================================
 # VISUALIZATION AND EVALUATION UTILITIES
 # ==============================================================================
@@ -1408,90 +1073,6 @@ def plot_spectrograms_and_play_audio(mixture, prediction, ground_truth, sr=22050
         
         print("\n🎵 Ground Truth (Target Vocals):")
         display(Audio(truth_norm, rate=sr))
-
-
-def evaluate_with_song_selector(model, processor, data_dir, sr=22050, device='cpu'):
-    """
-    Create interactive song selector for full-length song evaluation.
-    Shows spectrograms and audio for selected test songs.
-    
-    Args:
-        model: Trained model
-        processor: AudioProcessor instance
-        data_dir: Path to data root directory
-        sr: Sample rate
-        device: CPU or GPU
-    """
-    from IPython.display import display, HTML, Audio
-    import ipywidgets as widgets
-    from pathlib import Path
-    
-    data_dir = Path(data_dir)
-    
-    # Find all test songs
-    test_dir = data_dir / "stage2" / "test" / "mixture"
-    if not test_dir.exists():
-        print(f"⚠️  Test data not found at {test_dir}")
-        return
-    
-    test_files = sorted(test_dir.glob("*.npy"))
-    num_songs = len(test_files)
-    
-    print(f"\n{'='*70}")
-    print(f"INTERACTIVE SONG EVALUATION - {num_songs} test songs available")
-    print(f"{'='*70}\n")
-    
-    if num_songs == 0:
-        print("No test songs found")
-        return
-    
-    # Create dropdown widget
-    song_dropdown = widgets.Dropdown(
-        options=[(f"Song {i:04d}", i) for i in range(num_songs)],
-        description='Select Song:',
-        style={'description_width': '120px'},
-        layout=widgets.Layout(width='300px')
-    )
-    
-    output_widget = widgets.Output()
-    
-    def on_song_selected(change):
-        output_widget.clear_output(wait=True)
-        with output_widget:
-            song_idx = change['new']
-            
-            # Load mixture and ground truth
-            mix_file = data_dir / "stage2" / "test" / "mixture" / f"{song_idx:06d}.npy"
-            tgt_file = data_dir / "stage2" / "test" / "target" / f"{song_idx:06d}.npy"
-            
-            if mix_file.exists() and tgt_file.exists():
-                mixture = np.load(mix_file)
-                ground_truth = np.load(tgt_file)
-                
-                # Process with model
-                mix_tensor = torch.FloatTensor(mixture).unsqueeze(0).unsqueeze(0).to(device)
-                
-                with torch.no_grad():
-                    model.eval()
-                    pred_tensor = model(mix_tensor)
-                
-                prediction = pred_tensor.squeeze().cpu().numpy()
-                
-                # Plot and play
-                title = f"Test Song {song_idx:04d} Evaluation"
-                plot_spectrograms_and_play_audio(
-                    mixture, prediction, ground_truth,
-                    sr=sr, title=title, show_audio=True
-                )
-    
-    song_dropdown.observe(on_song_selected, names='value')
-    
-    # Display initial song
-    display(song_dropdown)
-    display(output_widget)
-    
-    # Auto-display first song
-    on_song_selected({'new': 0})
 
 
 # ===============================================================================
@@ -1594,212 +1175,6 @@ def train_model_stage(
     hist = trainer.train(num_epochs=num_epochs, save_path=str(ckpt_path))
     print(f"✅ Training complete! Best val loss: {min(hist['val_loss']):.6f}")
     return hist
-
-
-def train_model_a_comparison(data_dir, checkpoint_dir, chunk_duration=8.0, device='cuda', skip_training=False, train_stage2=True):
-    """
-    Train both Model A architectures (LSTM and U-Net) sequentially.
-    
-    Args:
-        data_dir: Path to preprocessed data
-        checkpoint_dir: Path to save checkpoints
-        chunk_duration: Chunk duration in seconds
-        device: 'cuda' or 'cpu'
-        skip_training: If True, only load existing checkpoints
-        
-    Returns:
-        Dictionary with models, processors, and training histories
-    """
-    from pathlib import Path
-    
-    data_dir = Path(data_dir)
-    checkpoint_dir = Path(checkpoint_dir)
-    training_data_dir = data_dir / f"chunks_{chunk_duration:.0f}s"
-    train_config = get_training_config()
-    
-    results = {}
-    
-    print(f"\n{'='*70}")
-    print(f"MODEL A COMPARISON TRAINING")
-    print(f"{'='*70}\n")
-    
-    # ===== MODEL A (LSTM) - STAGE 1 =====
-    print("1️⃣ Model A (LSTM) - Stage 1")
-    print("-" * 70)
-    
-    model_lstm, processor_lstm, optimizer_lstm, loss_fn_lstm = initialize_model_a_lstm(device)
-    lstm_params = sum(p.numel() for p in model_lstm.parameters())
-    print(f"   Parameters: {lstm_params:,}")
-    
-    ckpt_lstm_s1 = checkpoint_dir / f"model_a_lstm_stage1_{chunk_duration:.0f}s.pth"
-    
-    if ckpt_lstm_s1.exists():
-        print(f"✅ Found checkpoint: {ckpt_lstm_s1.name}")
-        checkpoint = torch.load(ckpt_lstm_s1, map_location=device)
-        model_lstm.load_state_dict(checkpoint['model_state_dict'])
-        hist_lstm_s1 = checkpoint.get('history', {})
-        if hist_lstm_s1:
-            print(f"   Best val loss: {min(hist_lstm_s1.get('val_loss', [float('inf')])):.6f}")
-    elif not skip_training:
-        print("🚀 Starting training...")
-        batch_size = train_config.get('batch_size', 8)
-        num_epochs = train_config.get('num_epochs', 50)
-        patience = train_config.get('patience', 10)
-
-        train_loader = get_data_loaders(training_data_dir, stage='stage1', split='train', 
-                           batch_size=batch_size)
-        val_loader = get_data_loaders(training_data_dir, stage='stage1', split='val', 
-                         batch_size=batch_size)
-        
-        trainer = UniversalTrainer(
-            model=model_lstm, train_loader=train_loader, val_loader=val_loader,
-            processor=processor_lstm, optimizer=optimizer_lstm, loss_fn=loss_fn_lstm,
-            device=device, patience=patience, input_type='spectrogram'
-        )
-        hist_lstm_s1 = trainer.train(num_epochs=num_epochs, 
-                                     save_path=str(ckpt_lstm_s1))
-        print(f"✅ Training complete! Best val loss: {min(hist_lstm_s1['val_loss']):.6f}")
-    else:
-        hist_lstm_s1 = {}
-    
-    # ===== MODEL A (LSTM) - STAGE 2 =====
-    ckpt_lstm_s2 = checkpoint_dir / f"model_a_lstm_stage2_{chunk_duration:.0f}s.pth"
-    hist_lstm_s2 = {}
-
-    if train_stage2:
-        print(f"\n1️⃣ Model A (LSTM) - Stage 2")
-        print("-" * 70)
-        if ckpt_lstm_s2.exists():
-            print(f"✅ Found checkpoint: {ckpt_lstm_s2.name}")
-            checkpoint = torch.load(ckpt_lstm_s2, map_location=device)
-            model_lstm.load_state_dict(checkpoint['model_state_dict'])
-            hist_lstm_s2 = checkpoint.get('history', {})
-            if hist_lstm_s2:
-                print(f"   Best val loss: {min(hist_lstm_s2.get('val_loss', [float('inf')])):.6f}")
-        elif not skip_training:
-            print("🚀 Starting training...")
-            batch_size = train_config.get('batch_size', 8)
-            num_epochs = train_config.get('num_epochs', 50)
-            patience = train_config.get('patience', 10)
-
-            train_loader = get_data_loaders(training_data_dir, stage='stage2', split='train',
-                                           batch_size=batch_size)
-            val_loader = get_data_loaders(training_data_dir, stage='stage2', split='val',
-                                         batch_size=batch_size)
-
-            trainer = UniversalTrainer(
-                model=model_lstm, train_loader=train_loader, val_loader=val_loader,
-                processor=processor_lstm, optimizer=optimizer_lstm, loss_fn=loss_fn_lstm,
-                device=device, patience=patience, input_type='spectrogram'
-            )
-            hist_lstm_s2 = trainer.train(num_epochs=num_epochs,
-                                         save_path=str(ckpt_lstm_s2))
-            print(f"✅ Training complete! Best val loss: {min(hist_lstm_s2['val_loss']):.6f}")
-
-    results['lstm'] = {
-        'model': model_lstm,
-        'processor': processor_lstm,
-        'optimizer': optimizer_lstm,
-        'loss_fn': loss_fn_lstm,
-        'history': {
-            'stage1': hist_lstm_s1,
-            'stage2': hist_lstm_s2
-        },
-        'checkpoint': {
-            'stage1': ckpt_lstm_s1,
-            'stage2': ckpt_lstm_s2
-        }
-    }
-    
-    # ===== MODEL A (U-NET) - STAGE 1 =====
-    print(f"\n2️⃣ Model A (U-Net) - Stage 1")
-    print("-" * 70)
-    
-    model_unet, processor_unet, optimizer_unet, loss_fn_unet = initialize_model_a_unet(device)
-    unet_params = sum(p.numel() for p in model_unet.parameters())
-    print(f"   Parameters: {unet_params:,}")
-    
-    ckpt_unet_s1 = checkpoint_dir / f"model_a_unet_stage1_{chunk_duration:.0f}s.pth"
-    
-    if ckpt_unet_s1.exists():
-        print(f"✅ Found checkpoint: {ckpt_unet_s1.name}")
-        checkpoint = torch.load(ckpt_unet_s1, map_location=device)
-        model_unet.load_state_dict(checkpoint['model_state_dict'])
-        hist_unet_s1 = checkpoint.get('history', {})
-        if hist_unet_s1:
-            print(f"   Best val loss: {min(hist_unet_s1.get('val_loss', [float('inf')])):.6f}")
-    elif not skip_training:
-        print("🚀 Starting training...")
-        batch_size = train_config.get('batch_size', 8)
-        num_epochs = train_config.get('num_epochs', 50)
-        patience = train_config.get('patience', 10)
-
-        train_loader = get_data_loaders(training_data_dir, stage='stage1', split='train', 
-                           batch_size=batch_size)
-        val_loader = get_data_loaders(training_data_dir, stage='stage1', split='val', 
-                         batch_size=batch_size)
-        
-        trainer = UniversalTrainer(
-            model=model_unet, train_loader=train_loader, val_loader=val_loader,
-            processor=processor_unet, optimizer=optimizer_unet, loss_fn=loss_fn_unet,
-            device=device, patience=patience, input_type='spectrogram'
-        )
-        hist_unet_s1 = trainer.train(num_epochs=num_epochs, 
-                                     save_path=str(ckpt_unet_s1))
-        print(f"✅ Training complete! Best val loss: {min(hist_unet_s1['val_loss']):.6f}")
-    else:
-        hist_unet_s1 = {}
-    
-    # ===== MODEL A (U-NET) - STAGE 2 =====
-    ckpt_unet_s2 = checkpoint_dir / f"model_a_unet_stage2_{chunk_duration:.0f}s.pth"
-    hist_unet_s2 = {}
-
-    if train_stage2:
-        print(f"\n2️⃣ Model A (U-Net) - Stage 2")
-        print("-" * 70)
-        if ckpt_unet_s2.exists():
-            print(f"✅ Found checkpoint: {ckpt_unet_s2.name}")
-            checkpoint = torch.load(ckpt_unet_s2, map_location=device)
-            model_unet.load_state_dict(checkpoint['model_state_dict'])
-            hist_unet_s2 = checkpoint.get('history', {})
-            if hist_unet_s2:
-                print(f"   Best val loss: {min(hist_unet_s2.get('val_loss', [float('inf')])):.6f}")
-        elif not skip_training:
-            print("🚀 Starting training...")
-            batch_size = train_config.get('batch_size', 8)
-            num_epochs = train_config.get('num_epochs', 50)
-            patience = train_config.get('patience', 10)
-
-            train_loader = get_data_loaders(training_data_dir, stage='stage2', split='train',
-                                           batch_size=batch_size)
-            val_loader = get_data_loaders(training_data_dir, stage='stage2', split='val',
-                                         batch_size=batch_size)
-
-            trainer = UniversalTrainer(
-                model=model_unet, train_loader=train_loader, val_loader=val_loader,
-                processor=processor_unet, optimizer=optimizer_unet, loss_fn=loss_fn_unet,
-                device=device, patience=patience, input_type='spectrogram'
-            )
-            hist_unet_s2 = trainer.train(num_epochs=num_epochs,
-                                         save_path=str(ckpt_unet_s2))
-            print(f"✅ Training complete! Best val loss: {min(hist_unet_s2['val_loss']):.6f}")
-
-    results['unet'] = {
-        'model': model_unet,
-        'processor': processor_unet,
-        'optimizer': optimizer_unet,
-        'loss_fn': loss_fn_unet,
-        'history': {
-            'stage1': hist_unet_s1,
-            'stage2': hist_unet_s2
-        },
-        'checkpoint': {
-            'stage1': ckpt_unet_s1,
-            'stage2': ckpt_unet_s2
-        }
-    }
-    
-    return results
 
 
 def load_training_history_from_checkpoint(ckpt_path):

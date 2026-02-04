@@ -307,16 +307,3 @@ def get_lstm_config():
         'dropout': 0.3,
         'bidirectional': True
     }
-
-
-def get_compact_lstm_config():
-    """
-    Returns configuration for Model A (LSTM) - compact version.
-    """
-    return {
-        'model_type': 'lstm_compact',
-        'freq_bins': 1025,
-        'hidden_size': 256,
-        'num_layers': 1,
-        'dropout': 0.2
-    }
