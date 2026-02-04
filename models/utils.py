@@ -900,6 +900,41 @@ def preprocess_musdb18(
 # ==============================================================================
 # DATA LOADING UTILITIES
 # ==============================================================================
+
+def _collate_dict_batch(batch):
+    """
+    Module-level collate function to batch dictionary-based samples.
+    Must be at module level to be picklable for multiprocessing.
+    """
+    mix_batch = [item['mix'] for item in batch]
+    tgt_batch = [item['tgt'] for item in batch]
+    
+    # Check if spectrograms (tuples) or waveforms (tensors)
+    if isinstance(mix_batch[0], tuple):
+        # Spectrograms: stack magnitude and phase separately
+        # Remove extra channel dimension if present: (freq_bins, time_steps) expected
+        mix_mag_list = [m[0].squeeze(0) if m[0].dim() == 3 else m[0] for m in mix_batch]
+        mix_ph_list = [m[1].squeeze(0) if m[1].dim() == 3 else m[1] for m in mix_batch]
+        tgt_mag_list = [t[0].squeeze(0) if t[0].dim() == 3 else t[0] for t in tgt_batch]
+        tgt_ph_list = [t[1].squeeze(0) if t[1].dim() == 3 else t[1] for t in tgt_batch]
+        
+        # Stack to (batch, freq_bins, time_steps) - NO channel dimension yet
+        # The trainer will add it via unsqueeze(1)
+        mix_mag = torch.stack(mix_mag_list)
+        mix_ph = torch.stack(mix_ph_list)
+        tgt_mag = torch.stack(tgt_mag_list)
+        tgt_ph = torch.stack(tgt_ph_list)
+        return {
+            'mix': (mix_mag, mix_ph),
+            'tgt': (tgt_mag, tgt_ph)
+        }
+    else:
+        # Waveforms: simple stack
+        return {
+            'mix': torch.stack(mix_batch),
+            'tgt': torch.stack(tgt_batch)
+        }
+
 def get_data_loaders(data_dir, stage='stage1', split='train', batch_size=16, num_workers=None):
     """
     Create DataLoader for a specific stage and split.
@@ -930,21 +965,19 @@ def get_data_loaders(data_dir, stage='stage1', split='train', batch_size=16, num
     
     dataset = StandardDataset(mix_files, tgt_files)
     
-    # Smart num_workers: Reduce on GPU (Colab has issues with multiprocessing workers)
-    # Local CPU can use more workers, but GPU (especially Colab) should use 0 or 1
-    if num_workers is None:
-        import torch
-        device_is_gpu = torch.cuda.is_available()
-        num_workers = 0 if device_is_gpu else 4  # Colab: 0 workers, Local CPU: 4 workers
+    # Smart num_workers: Use 0 for simplicity and to avoid pickling issues
+    # (Windows and Jupyter notebooks can have issues with multiprocessing)
+    num_workers = 0
     
     # Optimized DataLoader settings for GPU training
     loader = DataLoader(
         dataset, 
         batch_size=batch_size, 
         shuffle=(split=='train'),
-        num_workers=num_workers,       # 2 on GPU (Colab), 4 on CPU (local), or custom
+        num_workers=num_workers,       # 0 on GPU (Colab), 4 on CPU (local)
         pin_memory=True,               # Faster CPU->GPU transfer
-        persistent_workers=(num_workers > 0)  # Only if workers > 0
+        persistent_workers=(num_workers > 0),  # Only if workers > 0
+        collate_fn=_collate_dict_batch  # Use module-level collate function (picklable)
     )
     
     return loader
