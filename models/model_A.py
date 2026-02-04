@@ -147,8 +147,8 @@ class SpectrogramMaskingLSTM(nn.Module):
         self.num_layers = num_layers
         self.bidirectional = bidirectional
         
-        # Batch normalization (applied to log-magnitude spectrogram)
-        self.batch_norm = nn.BatchNorm1d(freq_bins)
+        # Layer normalization (more robust across PyTorch versions than BatchNorm1d)
+        self.layer_norm = nn.LayerNorm(freq_bins)
         
         # LSTM for temporal modeling
         # Input: (batch, time, freq_bins)
@@ -200,13 +200,15 @@ class SpectrogramMaskingLSTM(nn.Module):
             # If multiple channels, take first one
             x = x[:, 0, :, :]
         
-        # Batch normalization: reshape to (batch*time_steps, freq_bins) for BatchNorm1d
-        # This avoids shape issues across different PyTorch versions
-        x_reshaped = x.reshape(-1, freq_bins)  # (batch*time, freq)
-        x_normalized = self.batch_norm(x_reshaped)  # Apply norm
-        x_normalized = x_normalized.reshape(batch_size, time_steps, freq_bins)  # (batch, time, freq)
+        # Manual normalization: (batch, freq_bins, time_steps)
+        # Normalize across frequency dimension for each time step
+        mean = x.mean(dim=1, keepdim=True)  # (batch, 1, time_steps)
+        std = x.std(dim=1, keepdim=True) + 1e-8  # (batch, 1, time_steps)
+        x_normalized = (x - mean) / std  # (batch, freq_bins, time_steps)
         
-        # Transpose for LSTM: (batch, time_steps, freq_bins) - already in correct shape
+        # Transpose for LSTM: (batch, time_steps, freq_bins)
+        x_normalized = x_normalized.transpose(1, 2)
+        
         # LSTM processing
         lstm_out, _ = self.lstm(x_normalized)
         
@@ -239,8 +241,7 @@ class CompactLSTMMasking(nn.Module):
         
         self.freq_bins = freq_bins
         
-        # Batch normalization
-        self.batch_norm = nn.BatchNorm1d(freq_bins)
+        # No normalization layer needed - we'll do manual normalization in forward
         
         # Single-layer LSTM (faster training)
         self.lstm = nn.LSTM(
@@ -282,10 +283,13 @@ class CompactLSTMMasking(nn.Module):
         else:
             x = x[:, 0, :, :]
         
-        # Batch norm: reshape to avoid version compatibility issues
-        x_reshaped = x.reshape(-1, freq_bins)  # (batch*time, freq)
-        x = self.batch_norm(x_reshaped)  # Apply norm
-        x = x.reshape(batch_size, time_steps, freq_bins)  # (batch, time, freq)
+        # Manual normalization: normalize across frequency dimension
+        mean = x.mean(dim=1, keepdim=True)  # (batch, 1, time_steps)
+        std = x.std(dim=1, keepdim=True) + 1e-8  # (batch, 1, time_steps)
+        x = (x - mean) / std  # (batch, freq_bins, time_steps)
+        
+        # Transpose for LSTM: (batch, time_steps, freq_bins)
+        x = x.transpose(1, 2)
         
         # LSTM
         x, _ = self.lstm(x)
