@@ -669,7 +669,8 @@ def preprocess_musdb18(
     train_ratio=0.7,
     val_ratio=0.15,
     test_ratio=0.15,
-    save_spectrograms=True  # NEW: Save spectrograms instead of waveforms
+    save_spectrograms=True,  # NEW: Save spectrograms instead of waveforms
+    stream_save=True  # NEW: Save chunks on-the-fly to reduce RAM usage
 ):
     """
     Complete preprocessing pipeline for MUSDB18 dataset.
@@ -692,6 +693,7 @@ def preprocess_musdb18(
         val_ratio: Ratio for validation set
         test_ratio: Ratio for test set
         save_spectrograms: If True, save spectrograms instead of waveforms (10x faster training)
+        stream_save: If True, save chunks as they are generated to avoid RAM overflow
         
     Returns:
         Dictionary with file counts for each split
@@ -743,10 +745,17 @@ def preprocess_musdb18(
     
     # Process tracks and collect chunks
     print("🔄 Processing tracks into chunks...\n")
-    all_chunks = []  # Will store (stage, mixture, target) tuples
+    all_chunks = []  # Will store (stage, mixture, target) tuples when stream_save=False
     
     import gc
     
+    # Pre-allocate counters for streaming saves
+    if stream_save:
+        counters = {
+            'stage1': {'train': 0, 'val': 0, 'test': 0},
+            'stage2': {'train': 0, 'val': 0, 'test': 0}
+        }
+
     for track_idx, track in enumerate(tqdm(all_tracks, desc="Processing tracks")):
         # Load all stems
         vocals = track.targets['vocals'].audio  # Shape: (samples, 2) stereo
@@ -820,34 +829,76 @@ def preprocess_musdb18(
                 
                 mix_mag, mix_phase = processor.to_spectrogram(mix_tensor)
                 tgt_mag, tgt_phase = processor.to_spectrogram(tgt_tensor)
-                
-                # Store spectrograms as numpy arrays
-                all_chunks.append((
-                    stage,
-                    mix_mag.numpy(), mix_phase.numpy(),
-                    tgt_mag.numpy(), tgt_phase.numpy()
-                ))
+
+                if stream_save:
+                    # Decide split on-the-fly
+                    r = np.random.rand()
+                    if r < train_ratio:
+                        split_name = 'train'
+                    elif r < train_ratio + val_ratio:
+                        split_name = 'val'
+                    else:
+                        split_name = 'test'
+
+                    mix_dir = stage_dirs[f"{stage}_{split_name}_mixture"]
+                    tgt_dir = stage_dirs[f"{stage}_{split_name}_target"]
+                    idx = counters[stage][split_name]
+                    np.savez(mix_dir / f"{idx:06d}.npz", magnitude=mix_mag.numpy(), phase=mix_phase.numpy())
+                    np.savez(tgt_dir / f"{idx:06d}.npz", magnitude=tgt_mag.numpy(), phase=tgt_phase.numpy())
+                    counters[stage][split_name] += 1
+                else:
+                    # Store spectrograms as numpy arrays
+                    all_chunks.append((
+                        stage,
+                        mix_mag.numpy(), mix_phase.numpy(),
+                        tgt_mag.numpy(), tgt_phase.numpy()
+                    ))
             else:
-                all_chunks.append((stage, mixture.astype(np.float32), target.astype(np.float32)))
+                if stream_save:
+                    r = np.random.rand()
+                    if r < train_ratio:
+                        split_name = 'train'
+                    elif r < train_ratio + val_ratio:
+                        split_name = 'val'
+                    else:
+                        split_name = 'test'
+
+                    mix_dir = stage_dirs[f"{stage}_{split_name}_mixture"]
+                    tgt_dir = stage_dirs[f"{stage}_{split_name}_target"]
+                    idx = counters[stage][split_name]
+                    np.save(mix_dir / f"{idx:06d}.npy", mixture.astype(np.float32))
+                    np.save(tgt_dir / f"{idx:06d}.npy", target.astype(np.float32))
+                    counters[stage][split_name] += 1
+                else:
+                    all_chunks.append((stage, mixture.astype(np.float32), target.astype(np.float32)))
         
         # Clean up memory every 10 tracks to prevent RAM overflow
         if (track_idx + 1) % 10 == 0:
             gc.collect()
     
-    # Shuffle and split chunks
-    print(f"\n📊 Total chunks created: {len(all_chunks)}")
-    
-    # Clean memory before shuffling
-    gc.collect()
-    
-    np.random.shuffle(all_chunks)
-    
-    # Separate by stage
-    stage1_chunks = [c for c in all_chunks if c[0] == 'stage1']
-    stage2_chunks = [c for c in all_chunks if c[0] == 'stage2']
-    
-    print(f"   Stage 1: {len(stage1_chunks)} chunks ({len(stage1_chunks)/len(all_chunks)*100:.1f}%)")
-    print(f"   Stage 2: {len(stage2_chunks)} chunks ({len(stage2_chunks)/len(all_chunks)*100:.1f}%)\n")
+    if stream_save:
+        total_chunks = sum(counters[s][sp] for s in counters for sp in counters[s])
+        stage1_total = sum(counters['stage1'].values())
+        stage2_total = sum(counters['stage2'].values())
+
+        print(f"\n📊 Total chunks created: {total_chunks}")
+        print(f"   Stage 1: {stage1_total} chunks ({(stage1_total / max(1, total_chunks)) * 100:.1f}%)")
+        print(f"   Stage 2: {stage2_total} chunks ({(stage2_total / max(1, total_chunks)) * 100:.1f}%)\n")
+    else:
+        # Shuffle and split chunks
+        print(f"\n📊 Total chunks created: {len(all_chunks)}")
+        
+        # Clean memory before shuffling
+        gc.collect()
+        
+        np.random.shuffle(all_chunks)
+        
+        # Separate by stage
+        stage1_chunks = [c for c in all_chunks if c[0] == 'stage1']
+        stage2_chunks = [c for c in all_chunks if c[0] == 'stage2']
+        
+        print(f"   Stage 1: {len(stage1_chunks)} chunks ({len(stage1_chunks)/len(all_chunks)*100:.1f}%)")
+        print(f"   Stage 2: {len(stage2_chunks)} chunks ({len(stage2_chunks)/len(all_chunks)*100:.1f}%)\n")
     
     # Split each stage into train/val/test
     def split_and_save(chunks, stage_name):
@@ -882,17 +933,21 @@ def preprocess_musdb18(
         return counts
     
     print("💾 Saving organized data...")
-    stage1_counts = split_and_save(stage1_chunks, 'stage1')
-    
-    # Free memory after Stage 1 save
-    del stage1_chunks
-    gc.collect()
-    
-    stage2_counts = split_and_save(stage2_chunks, 'stage2')
-    
-    # Free memory after Stage 2 save
-    del stage2_chunks, all_chunks
-    gc.collect()
+    if stream_save:
+        stage1_counts = counters['stage1']
+        stage2_counts = counters['stage2']
+    else:
+        stage1_counts = split_and_save(stage1_chunks, 'stage1')
+        
+        # Free memory after Stage 1 save
+        del stage1_chunks
+        gc.collect()
+        
+        stage2_counts = split_and_save(stage2_chunks, 'stage2')
+        
+        # Free memory after Stage 2 save
+        del stage2_chunks, all_chunks
+        gc.collect()
     
     # Summary
     print(f"\n{'='*70}")
@@ -909,10 +964,11 @@ def preprocess_musdb18(
     print(f"      Test:  {stage2_counts['test']:,} chunks")
     print(f"\n   💾 Saved to: {output_root}\n")
     
+    total_chunks = sum(stage1_counts.values()) + sum(stage2_counts.values())
     return {
         'stage1': stage1_counts,
         'stage2': stage2_counts,
-        'total_chunks': len(all_chunks)
+        'total_chunks': total_chunks
     }
 
 
