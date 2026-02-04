@@ -993,11 +993,30 @@ def _collate_dict_batch(batch):
     # Check if spectrograms (tuples) or waveforms (tensors)
     if isinstance(mix_batch[0], tuple):
         # Spectrograms: stack magnitude and phase separately
-        # Remove extra channel dimension if present: (freq_bins, time_steps) expected
-        mix_mag_list = [m[0].squeeze(0) if m[0].dim() == 3 else m[0] for m in mix_batch]
-        mix_ph_list = [m[1].squeeze(0) if m[1].dim() == 3 else m[1] for m in mix_batch]
-        tgt_mag_list = [t[0].squeeze(0) if t[0].dim() == 3 else t[0] for t in tgt_batch]
-        tgt_ph_list = [t[1].squeeze(0) if t[1].dim() == 3 else t[1] for t in tgt_batch]
+        # Ensure data is tensor and remove extra channel dimension if present
+        mix_mag_list = []
+        for m in mix_batch:
+            mag = torch.tensor(m[0]) if not isinstance(m[0], torch.Tensor) else m[0]
+            mag = mag.squeeze(0) if mag.dim() == 3 else mag
+            mix_mag_list.append(mag)
+        
+        mix_ph_list = []
+        for m in mix_batch:
+            ph = torch.tensor(m[1]) if not isinstance(m[1], torch.Tensor) else m[1]
+            ph = ph.squeeze(0) if ph.dim() == 3 else ph
+            mix_ph_list.append(ph)
+        
+        tgt_mag_list = []
+        for t in tgt_batch:
+            mag = torch.tensor(t[0]) if not isinstance(t[0], torch.Tensor) else t[0]
+            mag = mag.squeeze(0) if mag.dim() == 3 else mag
+            tgt_mag_list.append(mag)
+        
+        tgt_ph_list = []
+        for t in tgt_batch:
+            ph = torch.tensor(t[1]) if not isinstance(t[1], torch.Tensor) else t[1]
+            ph = ph.squeeze(0) if ph.dim() == 3 else ph
+            tgt_ph_list.append(ph)
         
         # Stack to (batch, freq_bins, time_steps) - NO channel dimension yet
         # The trainer will add it via unsqueeze(1)
@@ -1008,6 +1027,7 @@ def _collate_dict_batch(batch):
         return {
             'mix': (mix_mag, mix_ph),
             'tgt': (tgt_mag, tgt_ph)
+        }
         }
     else:
         # Waveforms: simple stack
