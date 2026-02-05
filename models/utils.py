@@ -1,15 +1,13 @@
+import os
 import numpy as np
 import torch
-import torch.nn as nn
-import torch.optim as optim
-import os
 from pathlib import Path
 from torch.utils.data import Dataset, DataLoader
 import matplotlib.pyplot as plt
 from IPython.display import Audio, display
 import librosa
-import musdb
-from tqdm import tqdm
+import torch.nn as nn
+import torch.optim as optim
 
 # Configure CUDA memory to avoid fragmentation
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
@@ -56,10 +54,10 @@ class UniversalTrainer:
         batch_count = 0
         
         # Detect notebook environment for appropriate tqdm
-        def _in_notebook():
+        def _in_notebook() -> bool:
             try:
                 from IPython import get_ipython
-                shell = get_ipython().__class__.__name__
+                shell: str = get_ipython().__class__.__name__
                 return shell == 'ZMQInteractiveShell'
             except:
                 return False
@@ -78,9 +76,9 @@ class UniversalTrainer:
             
             # Move to device if tensor, leave tuples as-is
             if isinstance(mix, torch.Tensor):
-                mix = mix.to(self.device)
+                mix: torch.Tensor = mix.to(self.device)
             if isinstance(tgt, torch.Tensor):
-                tgt = tgt.to(self.device)
+                tgt: torch.Tensor = tgt.to(self.device)
             
             if self.input_type == 'spectrogram':
                 # Check if data is already spectrograms (tuple of magnitude and phase)
@@ -119,7 +117,7 @@ class UniversalTrainer:
                 if mask.shape != mix_log.shape:
                     mask = mask[:, :, :mix_log.shape[2], :mix_log.shape[3]]
                 est_linear = mask * torch.expm1(mix_log)
-                est_log = torch.log1p(est_linear)
+                est_log: torch.Tensor = torch.log1p(est_linear)
                 loss = self.loss_fn(est_log, tgt_log)
                 loss.backward()
                 self.optimizer.step()
@@ -190,7 +188,7 @@ class UniversalTrainer:
                     if mask.shape != mix_log.shape:
                         mask = mask[:, :, :mix_log.shape[2], :mix_log.shape[3]]
                     est_linear = mask * torch.expm1(mix_log)
-                    est_log = torch.log1p(est_linear)
+                    est_log: torch.Tensor = torch.log1p(est_linear)
                     loss = self.loss_fn(est_log, tgt_log)
                     total_loss += loss.item()
                 else:
@@ -299,9 +297,9 @@ class Separator:
         """
         self.model.eval()
         with torch.no_grad():
-            mix = torch.tensor(mixture).to(self.device)
+            mix: torch.Tensor = torch.tensor(mixture).to(self.device)
             if mix.ndim == 1:
-                mix = mix.unsqueeze(0)
+                mix: torch.Tensor = mix.unsqueeze(0)
             if self.input_type == 'spectrogram':
                 mix, mix_phase = self.processor.to_spectrogram(mix)
                 mix_in = mix.unsqueeze(1)
@@ -356,23 +354,23 @@ class AudioProcessor:
         """
         # Ensure tensor and correct device
         if isinstance(waveform, np.ndarray):
-            waveform = torch.from_numpy(waveform)
+            waveform: torch.Tensor = torch.from_numpy(waveform)
         elif isinstance(waveform, (list, tuple)):
             if len(waveform) == 0:
-                waveform = torch.empty(0)
+                waveform: torch.Tensor = torch.empty(0)
             elif isinstance(waveform[0], torch.Tensor):
-                waveform = torch.stack(waveform)
+                waveform: torch.Tensor = torch.stack(waveform)
             elif isinstance(waveform[0], np.ndarray):
-                waveform = torch.from_numpy(np.stack(waveform))
+                waveform: torch.Tensor = torch.from_numpy(np.stack(waveform))
             else:
-                waveform = torch.tensor(waveform)
+                waveform: torch.Tensor = torch.tensor(waveform)
         if waveform.ndim == 1:
             waveform = waveform.unsqueeze(0) # Add channel dim
             
         waveform = waveform.to(self.device).float()
         
         # Pass the pre-allocated window
-        complex_spec = torch.stft(
+        complex_spec: torch.Tensor = torch.stft(
             waveform, 
             n_fft=self.n_fft, 
             hop_length=self.hop_length, 
@@ -380,9 +378,9 @@ class AudioProcessor:
             return_complex=True
         )
         
-        mag = torch.abs(complex_spec)
-        phase = torch.angle(complex_spec)
-        log_mag = torch.log1p(mag) # Log compression
+        mag: torch.Tensor = torch.abs(complex_spec)
+        phase: torch.Tensor = torch.angle(complex_spec)
+        log_mag: torch.Tensor = torch.log1p(mag) # Log compression
         
         return log_mag, phase
 
@@ -391,14 +389,14 @@ class AudioProcessor:
         Converts log-magnitude and phase to waveform.
         Returns waveform as numpy array.
         """
-        if isinstance(log_mag, np.ndarray): log_mag = torch.from_numpy(log_mag)
-        if isinstance(phase, np.ndarray): phase = torch.from_numpy(phase)
+        if isinstance(log_mag, np.ndarray): log_mag: torch.Tensor = torch.from_numpy(log_mag)
+        if isinstance(phase, np.ndarray): phase: torch.Tensor = torch.from_numpy(phase)
             
         log_mag = log_mag.to(self.device)
         phase = phase.to(self.device)
         
-        lin_mag = torch.expm1(log_mag)
-        complex_spec = lin_mag * torch.exp(1j * phase)
+        lin_mag: torch.Tensor = torch.expm1(log_mag)
+        complex_spec: torch.Tensor = lin_mag * torch.exp(1j * phase)
         
         # Pass window here too
         waveform = torch.istft(
@@ -1023,7 +1021,6 @@ def preprocess_musdb18(
         'total_chunks': total_chunks
     }
 
-
 # ==============================================================================
 # DATA LOADING UTILITIES
 # ==============================================================================
@@ -1178,6 +1175,77 @@ def load_musdb_stems(track_folder, sr=22050):
 
 
 # ===============================================================================
+# MUSDB18 PREPROCESSING FUNCTIONS
+# ===============================================================================
+
+# Stage 1: mix = vocals+other, target = other (single stem output)
+def process_stage1() -> None:
+    print(f"\n{'='*70}\nSTAGE 1: vocals+other → other (single stem)\n{'='*70}")
+    for split, folder in MUSDB_SPLITS.items():
+        out_dir = DATA_DIR / 'stage1' / split
+        mix_dir = out_dir / 'mixture'
+        tgt_dir = out_dir / 'target'
+        if mix_dir.exists() and tgt_dir.exists() and any(mix_dir.glob('*.npy')) and any(tgt_dir.glob('*.npy')):
+            print(f"⏭️  {split}: already exists, skipping...")
+            continue
+        print(f"Processing {split} ({folder})...")
+        mix_dir.mkdir(parents=True, exist_ok=True)
+        tgt_dir.mkdir(parents=True, exist_ok=True)
+        for track_folder in folder.iterdir():
+            stems = load_musdb_stems(track_folder, sr=SAMPLE_RATE)  # expects dict: {'vocals', 'drums', 'bass', 'other'}
+            vocals = stems['vocals']
+            other = stems['other']
+            # Mix = vocals + other
+            mix = vocals + other
+            # Target = other
+            target = other
+            # Chunking
+            total_len: int = min(len(mix), len(target))
+            step = int((CHUNK_DURATION - CHUNK_OVERLAP) * SAMPLE_RATE)
+            chunk_len = int(CHUNK_DURATION * SAMPLE_RATE)
+            for i, start in enumerate(range(0, total_len - chunk_len + 1, step)):
+                mix_chunk = mix[start:start+chunk_len]
+                tgt_chunk = target[start:start+chunk_len]
+                np.save(mix_dir / f"{track_folder.name}_chunk{i}.npy", mix_chunk)
+                np.save(tgt_dir / f"{track_folder.name}_chunk{i}.npy", tgt_chunk)
+        print(f"✅ {split} complete: {len(list(mix_dir.glob('*.npy')))} chunks")
+
+# Stage 2: mix = all 4 stems, target = full accompaniment (drums+bass+other)
+def process_stage2() -> None:
+    print(f"\n{'='*70}\nSTAGE 2: all 4 stems → accompaniment (3 stems)\n{'='*70}")
+    for split, folder in MUSDB_SPLITS.items():
+        out_dir = DATA_DIR / 'stage2' / split
+        mix_dir = out_dir / 'mixture'
+        tgt_dir = out_dir / 'target'
+        if mix_dir.exists() and tgt_dir.exists() and any(mix_dir.glob('*.npy')) and any(tgt_dir.glob('*.npy')):
+            print(f"⏭️  {split}: already exists, skipping...")
+            continue
+        print(f"Processing {split} ({folder})...")
+        mix_dir.mkdir(parents=True, exist_ok=True)
+        tgt_dir.mkdir(parents=True, exist_ok=True)
+        for track_folder in folder.iterdir():
+            stems = load_musdb_stems(track_folder, sr=SAMPLE_RATE)  # expects dict: {'vocals', 'drums', 'bass', 'other'}
+            vocals = stems['vocals']
+            drums = stems['drums']
+            bass = stems['bass']
+            other = stems['other']
+            # Mix = vocals + drums + bass + other
+            mix = vocals + drums + bass + other
+            # Target = accompaniment (drums + bass + other)
+            target = drums + bass + other
+            # Chunking
+            total_len: int = min(len(mix), len(target))
+            step = int((CHUNK_DURATION - CHUNK_OVERLAP) * SAMPLE_RATE)
+            chunk_len = int(CHUNK_DURATION * SAMPLE_RATE)
+            for i, start in enumerate(range(0, total_len - chunk_len + 1, step)):
+                mix_chunk = mix[start:start+chunk_len]
+                tgt_chunk = target[start:start+chunk_len]
+                np.save(mix_dir / f"{track_folder.name}_chunk{i}.npy", mix_chunk)
+                np.save(tgt_dir / f"{track_folder.name}_chunk{i}.npy", tgt_chunk)
+        print(f"✅ {split} complete: {len(list(mix_dir.glob('*.npy')))} chunks")
+
+
+# ===============================================================================
 # INFERENCE: SEPARATE FULL-LENGTH SONGS
 # ===============================================================================
 def separate_full_song(
@@ -1190,18 +1258,18 @@ def separate_full_song(
     device='cpu'
 ):
     """
-    Separate vocals from a full-length song using overlapping chunks.
-    
-    Handles variable-length audio by:
-    1. Chunking into fixed-size segments with overlap
-    2. Processing each chunk through the model
-    3. Reconstructing using Hann window for smooth overlaps
-    4. Trimming back to original length
-    
-    Args:
-        model: Trained separation model
-        processor: AudioProcessor instance
-        audio_path: Path to audio file (WAV/MP3)
+    model = TimeFrequencyDomainUNet(
+        input_channels=1,
+        output_channels=1,
+        base_filters=64,  # Increased base filters for more capacity
+        depth=4,
+        kernel_size=5,
+        stride=2,
+        padding=2,
+        norm_type='batch',
+        activation='relu',
+        final_activation=None
+    ).to(device)
         chunk_duration: Duration of each chunk in seconds (default 8.0)
         overlap: Overlap ratio 0-1 (default 0.5 = 50%)
         sr: Sample rate (default 22050)
@@ -1380,19 +1448,17 @@ def plot_spectrograms_and_play_audio(mixture, prediction, ground_truth, sr=22050
 
 def initialize_model_a_lstm(device='cuda'):
     """Initialize Model A (LSTM) with full configuration."""
-    from . import model_A as ma
-    import torch.optim as optim
-    import torch.nn as nn
+    from models import model_A
     
     processor = AudioProcessor(device=device)
-    model = ma.SpectrogramMaskingLSTM(
+    model = model_A.SpectrogramMaskingLSTM(
         freq_bins=1025,
         hidden_size=512,
         num_layers=2,
         dropout=0.3,
         bidirectional=True
     ).to(device)
-    optimizer = optim.Adam(model.parameters(), lr=get_training_config_lstm()['learning_rate'])
+    optimizer = torch.optim.Adam(model.parameters(), lr=get_training_config_lstm()['learning_rate'])
     loss_fn = nn.MSELoss()
     
     return model, processor, optimizer, loss_fn
@@ -1400,12 +1466,10 @@ def initialize_model_a_lstm(device='cuda'):
 
 def initialize_model_a_unet(device='cuda'):
     """Initialize Model A (U-Net) with default configuration."""
-    from . import model_A as ma
-    import torch.optim as optim
-    import torch.nn as nn
+    from models import model_A
     
     processor = AudioProcessor(device=device)
-    model = ma.TimeFrequencyDomainUNet(
+    model = model_A.TimeFrequencyDomainUNet(
         in_channels=1,
         out_channels=1,
         base_filters=48,
@@ -1413,7 +1477,7 @@ def initialize_model_a_unet(device='cuda'):
         batchnorm=True,
         dropout=0.1
     ).to(device)
-    optimizer = optim.Adam(model.parameters(), lr=get_training_config_unet()['learning_rate'])
+    optimizer = torch.optim.Adam(model.parameters(), lr=get_training_config_unet()['learning_rate'])
     loss_fn = nn.MSELoss()
     
     return model, processor, optimizer, loss_fn
@@ -1604,7 +1668,7 @@ def evaluate_separation_quality(model_lstm, model_unet, processor_lstm, processo
         mix_wav = np.load(mix_file)
         tgt_wav = np.load(tgt_file)
         
-        min_len = min(len(mix_wav), len(tgt_wav))
+        min_len: int = min(len(mix_wav), len(tgt_wav))
         mix_wav = mix_wav[:min_len]
         tgt_wav = tgt_wav[:min_len]
         
