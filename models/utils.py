@@ -1081,16 +1081,7 @@ def _collate_dict_batch(batch):
 def get_data_loaders(data_dir, stage='stage1', split='train', batch_size=16, num_workers=None):
     """
     Create DataLoader for a specific stage and split.
-    
-    Args:
-        data_dir: Root data directory
-        stage: 'stage1' or 'stage2'
-        split: 'train', 'val', or 'test'
-        batch_size: Batch size for DataLoader
-        num_workers: Number of workers (if None, auto-detect based on device)
-        
-    Returns:
-        DataLoader ready for training/evaluation
+    Updated for speed: Uses multiprocessing workers on GPU.
     """
     data_root = Path(data_dir) / stage / split
     
@@ -1108,23 +1099,21 @@ def get_data_loaders(data_dir, stage='stage1', split='train', batch_size=16, num
     
     dataset = StandardDataset(mix_files, tgt_files)
     
-    # Smart num_workers: Use 0 for simplicity and to avoid pickling issues
-    # (Windows and Jupyter notebooks can have issues with multiprocessing)
-    num_workers = 0
+    # SPEED FIX: Use 2 workers if GPU is present, otherwise 0
+    if num_workers is None:
+        num_workers = 2 if torch.cuda.is_available() else 0
     
-    # Optimized DataLoader settings for GPU training
     loader = DataLoader(
         dataset, 
         batch_size=batch_size, 
         shuffle=(split=='train'),
-        num_workers=num_workers,       # 0 on GPU (Colab), 4 on CPU (local)
-        pin_memory=torch.cuda.is_available(),  # Only pin when GPU available
-        persistent_workers=(num_workers > 0),  # Only if workers > 0
-        collate_fn=_collate_dict_batch  # Use module-level collate function (picklable)
+        num_workers=num_workers,
+        pin_memory=torch.cuda.is_available(),
+        persistent_workers=(num_workers > 0),
+        collate_fn=_collate_dict_batch
     )
     
     return loader
-
 
 # ==============================================================================
 # LEGACY CACHING LOGIC (Kept for backward compatibility)
