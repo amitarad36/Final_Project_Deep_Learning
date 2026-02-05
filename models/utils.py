@@ -85,15 +85,34 @@ class UniversalTrainer:
             if self.input_type == 'spectrogram':
                 # Check if data is already spectrograms (tuple of magnitude and phase)
                 if isinstance(mix, tuple):
-                    # Pre-computed spectrograms - already in log magnitude format
-                    mix_log = mix[0].to(self.device).unsqueeze(1)  # magnitude
-                    tgt_log = tgt[0].to(self.device).unsqueeze(1)  # magnitude
+                    # Robust loading: Ensure exactly 4D [Batch, 1, Freq, Time]
+                    mix_mag = mix[0].to(self.device)
+                    tgt_mag = tgt[0].to(self.device)
+                    
+                    # Handle 3D tensors (batch, freq, time) -> add channel dimension
+                    if mix_mag.dim() == 3:
+                        mix_mag = mix_mag.unsqueeze(1)
+                    elif mix_mag.dim() == 2:
+                        # Handle 2D tensors (freq, time) -> add batch and channel
+                        mix_mag = mix_mag.unsqueeze(0).unsqueeze(0)
+                    
+                    if tgt_mag.dim() == 3:
+                        tgt_mag = tgt_mag.unsqueeze(1)
+                    elif tgt_mag.dim() == 2:
+                        tgt_mag = tgt_mag.unsqueeze(0).unsqueeze(0)
+                    
+                    mix_log = mix_mag  # Already log-magnitude from dataset
+                    tgt_log = tgt_mag
                 else:
                     # Waveforms - need to convert to spectrograms
                     mix_log, _ = self.processor.to_spectrogram(mix)
                     tgt_log, _ = self.processor.to_spectrogram(tgt)
-                    mix_log = mix_log.unsqueeze(1)
-                    tgt_log = tgt_log.unsqueeze(1)
+                    
+                    # Ensure 4D
+                    if mix_log.dim() == 3:
+                        mix_log = mix_log.unsqueeze(1)
+                    if tgt_log.dim() == 3:
+                        tgt_log = tgt_log.unsqueeze(1)
                 
                 self.optimizer.zero_grad()
                 mask = self.model(mix_log)
@@ -139,15 +158,33 @@ class UniversalTrainer:
                 if self.input_type == 'spectrogram':
                     # Check if data is already spectrograms (tuple of magnitude and phase)
                     if isinstance(mix, tuple):
-                        # Pre-computed spectrograms - already in log magnitude format
-                        mix_log = mix[0].to(self.device).unsqueeze(1)  # magnitude
-                        tgt_log = tgt[0].to(self.device).unsqueeze(1)  # magnitude
+                        # Robust loading: Ensure exactly 4D [Batch, 1, Freq, Time]
+                        mix_mag = mix[0].to(self.device)
+                        tgt_mag = tgt[0].to(self.device)
+                        
+                        # Handle 3D tensors (batch, freq, time) -> add channel dimension
+                        if mix_mag.dim() == 3:
+                            mix_mag = mix_mag.unsqueeze(1)
+                        elif mix_mag.dim() == 2:
+                            mix_mag = mix_mag.unsqueeze(0).unsqueeze(0)
+                        
+                        if tgt_mag.dim() == 3:
+                            tgt_mag = tgt_mag.unsqueeze(1)
+                        elif tgt_mag.dim() == 2:
+                            tgt_mag = tgt_mag.unsqueeze(0).unsqueeze(0)
+                        
+                        mix_log = mix_mag  # Already log-magnitude from dataset
+                        tgt_log = tgt_mag
                     else:
                         # Waveforms - need to convert to spectrograms
                         mix_log, _ = self.processor.to_spectrogram(mix)
                         tgt_log, _ = self.processor.to_spectrogram(tgt)
-                        mix_log = mix_log.unsqueeze(1)
-                        tgt_log = tgt_log.unsqueeze(1)
+                        
+                        # Ensure 4D
+                        if mix_log.dim() == 3:
+                            mix_log = mix_log.unsqueeze(1)
+                        if tgt_log.dim() == 3:
+                            tgt_log = tgt_log.unsqueeze(1)
                     
                     mask = self.model(mix_log)
                     if mask.shape != mix_log.shape:
