@@ -1461,8 +1461,8 @@ def initialize_model_a_unet(device='cuda'):
     model = model_A.TimeFrequencyDomainUNet(
         in_channels=1,
         out_channels=1,
-        base_filters=48,
-        num_layers=4,
+        base_filters=32,
+        num_layers=5,
         batchnorm=True,
         dropout=0.1
     ).to(device)
