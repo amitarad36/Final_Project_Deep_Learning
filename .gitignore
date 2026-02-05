@@ -7,6 +7,9 @@ checkpoints/*
 # musdb18 dataset
 musdb18/
 
+# Zip files
+*.zip
+
 # Generated outputs
 outputs/
 
