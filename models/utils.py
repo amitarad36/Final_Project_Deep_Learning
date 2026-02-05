@@ -1148,6 +1148,35 @@ def show_spectrogram(tensor, title="Spectrogram"):
     plt.tight_layout()
     plt.show()
 
+
+# ===============================================================================
+# MUSDB18 STEM LOADING (for preprocessing)
+# ===============================================================================
+def load_musdb_stems(track_folder, sr=22050):
+    """
+    Loads the four MUSDB18 stems (vocals, drums, bass, other) from a track folder.
+    Returns a dict: {'vocals': ..., 'drums': ..., 'bass': ..., 'other': ...} (all mono, resampled to sr)
+    """
+    import librosa
+    from pathlib import Path
+    stems = {}
+    for stem in ['vocals', 'drums', 'bass', 'other']:
+        # Try .wav first, fallback to .mp4
+        wav_path = Path(track_folder) / f"{stem}.wav"
+        mp4_path = Path(track_folder) / f"{stem}.mp4"
+        if wav_path.exists():
+            audio, file_sr = librosa.load(wav_path, sr=None, mono=True)
+        elif mp4_path.exists():
+            audio, file_sr = librosa.load(mp4_path, sr=None, mono=True)
+        else:
+            raise FileNotFoundError(f"Stem file not found for {stem} in {track_folder}")
+        # Resample if needed
+        if file_sr != sr:
+            audio = librosa.resample(audio, orig_sr=file_sr, target_sr=sr)
+        stems[stem] = audio
+    return stems
+
+
 # ===============================================================================
 # INFERENCE: SEPARATE FULL-LENGTH SONGS
 # ===============================================================================
