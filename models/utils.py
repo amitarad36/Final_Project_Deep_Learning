@@ -1663,19 +1663,26 @@ def evaluate_separation_quality(model_lstm, model_unet, processor_lstm, processo
         
         # Convert to spectrograms
         mix_mag, mix_phase = processor_lstm.to_spectrogram(torch.tensor(mix_wav))
-        mix_mag_in = mix_mag.unsqueeze(0).unsqueeze(0).to(device)
+        # mix_mag is already [1, freq, time] from to_spectrogram, just add batch dim
+        mix_mag_in = mix_mag.unsqueeze(0).to(device)  # [1, 1, freq, time]
         
         # LSTM prediction
         with torch.no_grad():
             mask_lstm = model_lstm(mix_mag_in)
-            est_mag_lstm = mask_lstm.squeeze(0).squeeze(0) * mix_mag.to(device)
-            est_wav_lstm = processor_lstm.to_waveform(est_mag_lstm.cpu(), mix_phase.cpu()).numpy()
+            # Apply mask in LINEAR domain
+            est_linear_lstm = mask_lstm.squeeze(0) * torch.expm1(mix_mag.to(device))
+            # Convert back to log domain for waveform reconstruction
+            est_mag_lstm = torch.log1p(est_linear_lstm)
+            est_wav_lstm = processor_lstm.to_waveform(est_mag_lstm.squeeze(0).cpu(), mix_phase.squeeze(0).cpu())
         
         # U-Net prediction
         with torch.no_grad():
             mask_unet = model_unet(mix_mag_in)
-            est_mag_unet = mask_unet.squeeze(0).squeeze(0) * mix_mag.to(device)
-            est_wav_unet = processor_unet.to_waveform(est_mag_unet.cpu(), mix_phase.cpu()).numpy()
+            # Apply mask in LINEAR domain
+            est_linear_unet = mask_unet.squeeze(0) * torch.expm1(mix_mag.to(device))
+            # Convert back to log domain for waveform reconstruction
+            est_mag_unet = torch.log1p(est_linear_unet)
+            est_wav_unet = processor_unet.to_waveform(est_mag_unet.squeeze(0).cpu(), mix_phase.squeeze(0).cpu())
         
         # Ensure same length for evaluation
         min_eval_len = min(len(tgt_wav), len(est_wav_lstm), len(est_wav_unet))
@@ -1754,3 +1761,250 @@ def evaluate_separation_quality(model_lstm, model_unet, processor_lstm, processo
     plt.show()
     
     return {'lstm': lstm_metrics, 'unet': unet_metrics}
+
+
+# ==============================================================================
+# Test Evaluation Functions
+# ==============================================================================
+
+def load_test_results(ckpt_path):
+    """Load test results from checkpoint if it exists"""
+    import pickle
+    if ckpt_path.exists():
+        with open(ckpt_path, 'rb') as f:
+            return pickle.load(f)
+    return None
+
+
+def save_test_results(results, ckpt_path):
+    """Save test results to checkpoint"""
+    import pickle
+    with open(ckpt_path, 'wb') as f:
+        pickle.dump(results, f)
+    print(f"✅ Saved test results to: {ckpt_path.name}")
+
+
+def evaluate_test_set(model, processor, test_data_dir, stage, loss_fn, device, sr=22050):
+    """
+    Compute loss on test set (forward pass only, no gradients).
+    Assess generalization to unseen data.
+    """
+    test_loader = get_data_loaders(test_data_dir, stage=stage, split='test', batch_size=32)
+
+    model.eval()
+    test_losses = []
+
+    with torch.no_grad():
+        for batch_idx, batch in enumerate(test_loader):
+            mix = batch['mix']
+            target = batch['tgt']
+
+            # Check if data is already spectrograms (tuple) or waveforms (tensor)
+            if isinstance(mix, tuple):
+                # Already spectrograms - extract magnitude and move to device
+                mix_mag = mix[0].to(device)
+                tgt_mag = target[0].to(device)
+                
+                # Add channel dimension if needed (model expects 4D: batch, channel, freq, time)
+                if mix_mag.dim() == 3:
+                    mix_mag = mix_mag.unsqueeze(1)
+                if tgt_mag.dim() == 3:
+                    tgt_mag = tgt_mag.unsqueeze(1)
+                
+                mix_processed = mix_mag
+                target_processed = tgt_mag
+            else:
+                # Waveforms - convert to spectrograms
+                mix = mix.to(device)
+                target = target.to(device)
+                
+                mix_spec = processor.to_spectrogram(mix)
+                target_spec = processor.to_spectrogram(target)
+                
+                # Extract magnitude and add channel dimension
+                mix_processed = mix_spec[0].unsqueeze(1) if mix_spec[0].dim() == 3 else mix_spec[0]
+                target_processed = target_spec[0].unsqueeze(1) if target_spec[0].dim() == 3 else target_spec[0]
+
+            # Forward pass (model outputs a mask)
+            mask = model(mix_processed)
+            
+            # Ensure mask shape matches input
+            if mask.shape != mix_processed.shape:
+                mask = mask[:, :, :mix_processed.shape[2], :mix_processed.shape[3]]
+            
+            # Apply mask in LINEAR domain (same as training)
+            est_linear = mask * torch.expm1(mix_processed)
+            est_log = torch.log1p(est_linear)
+            
+            # Compute loss in LOG domain
+            loss = loss_fn(est_log, target_processed)
+            test_losses.append(loss.item())
+
+            if (batch_idx + 1) % max(1, len(test_loader) // 5) == 0 or batch_idx == 0:
+                print(f"  Batch {batch_idx+1}/{len(test_loader)} | Loss: {loss.item():.6f}")
+
+    avg_test_loss = np.mean(test_losses)
+    std_test_loss = np.std(test_losses)
+
+    print(f"\n{'='*70}")
+    print(f"TEST RESULTS:")
+    print(f"  Mean Loss: {avg_test_loss:.6f}")
+    print(f"  Std Loss:  {std_test_loss:.6f}")
+    print(f"  Min Loss:  {min(test_losses):.6f}")
+    print(f"  Max Loss:  {max(test_losses):.6f}")
+    print(f"{'='*70}\n")
+
+    return {'test_losses': test_losses, 'mean': avg_test_loss, 'std': std_test_loss}
+
+
+def sliding_window_inference(model, processor, audio, chunk_len=8.0, sr=22050, device='cuda'):
+    """Apply model with overlapping windows for long audio"""
+    chunk_samples = int(chunk_len * sr)
+    stride = chunk_samples // 2  # 50% overlap
+    output = np.zeros_like(audio)
+    weights = np.zeros_like(audio)
+    
+    print("   Processing: ", end="", flush=True)
+    for pos in range(0, len(audio), stride):
+        if pos % (stride * 5) == 0:
+            print(".", end="", flush=True)
+        
+        segment = audio[pos:pos + chunk_samples]
+        if len(segment) < chunk_samples:
+            segment = np.pad(segment, (0, chunk_samples - len(segment)))
+        
+        with torch.no_grad():
+            spec = processor.to_spectrogram(segment)
+            mag, phase = spec[0].squeeze(), spec[1].squeeze()
+            if mag.dim() > 1 and mag.shape[0] < mag.shape[1]:
+                mag = mag.t()
+            
+            inp = mag.unsqueeze(0).unsqueeze(0).to(device)
+            mask = model(inp).squeeze()
+            
+            # Ensure shapes match
+            if mask.shape != mag.shape:
+                mask = mask[:mag.shape[0], :mag.shape[1]]
+            
+            est_mag = torch.log1p(mask * torch.expm1(mag))
+            est_seg = processor.to_waveform(est_mag.cpu().numpy(), phase.numpy())
+        
+        valid_len = min(len(segment), len(audio) - pos)
+        # Ensure est_seg matches the expected length
+        if len(est_seg) > valid_len:
+            est_seg = est_seg[:valid_len]
+        elif len(est_seg) < valid_len:
+            est_seg = np.pad(est_seg, (0, valid_len - len(est_seg)))
+        
+        window = np.hanning(chunk_samples)[:valid_len]
+        output[pos:pos + valid_len] += est_seg * window
+        weights[pos:pos + valid_len] += window
+    
+    print(" Done!")
+    return np.divide(output, weights, where=weights > 0, out=output.copy())
+
+
+def to_spec(wav, processor):
+    """Convert waveform to displayable spectrogram"""
+    s = processor.to_spectrogram(wav)[0].squeeze().numpy()
+    return s.T if s.shape[0] < s.shape[1] else s
+
+
+def compare_models_on_audio_file(file_path, model_lstm, model_unet, processor_lstm, 
+                                  processor_unet, device, sr=22050, duration=None):
+    """
+    Load a custom audio file, run inference with both LSTM and U-Net models,
+    and display spectrograms + audio playback for comparison.
+    
+    Args:
+        file_path: Path to audio file
+        model_lstm: Trained LSTM model
+        model_unet: Trained U-Net model
+        processor_lstm: AudioProcessor for LSTM
+        processor_unet: AudioProcessor for U-Net
+        device: torch device ('cuda' or 'cpu')
+        sr: Sample rate (default: 22050)
+        duration: Duration to process in seconds (None for full file)
+    """
+    import librosa
+    import matplotlib.pyplot as plt
+    from IPython.display import Audio, display
+    
+    print("="*70)
+    print("CUSTOM AUDIO INFERENCE")
+    print("="*70)
+    print(f"\n📂 Loading: {file_path}")
+    
+    # Load audio file
+    try:
+        audio, file_sr = librosa.load(file_path, sr=None, mono=True)
+        print(f"   Original SR: {file_sr} Hz, Duration: {len(audio)/file_sr:.2f}s")
+        
+        # Resample if needed
+        if file_sr != sr:
+            print(f"   Resampling to {sr} Hz...")
+            audio = librosa.resample(audio, orig_sr=file_sr, target_sr=sr)
+        
+        # Trim to specified duration
+        if duration is not None:
+            target_samples = int(duration * sr)
+            if len(audio) > target_samples:
+                audio = audio[:target_samples]
+                print(f"   Trimmed to {duration}s")
+        
+        print(f"✅ Loaded: {len(audio)/sr:.2f}s @ {sr} Hz")
+        
+    except Exception as e:
+        print(f"❌ Error loading audio file: {e}")
+        return
+    
+    # Run inference with both models
+    model_lstm.eval()
+    model_unet.eval()
+    
+    print("\n🚀 Running inference...")
+    print("LSTM:")
+    est_lstm = sliding_window_inference(model_lstm, processor_lstm, audio, 
+                                       chunk_len=8.0, sr=sr, device=device)
+    print("U-Net:")
+    est_unet = sliding_window_inference(model_unet, processor_unet, audio,
+                                       chunk_len=8.0, sr=sr, device=device)
+    
+    # Visualization
+    print(f"\n{'='*70}")
+    print("RESULTS")
+    print(f"{'='*70}\n")
+    
+    fig, axes = plt.subplots(3, 1, figsize=(16, 10))
+    
+    axes[0].imshow(to_spec(audio, processor_lstm), aspect='auto', origin='lower', cmap='viridis')
+    axes[0].set_title("Input: Original Audio", fontweight='bold', fontsize=12)
+    axes[0].set_ylabel("Frequency")
+    
+    axes[1].imshow(to_spec(est_lstm, processor_lstm), aspect='auto', origin='lower', cmap='viridis')
+    axes[1].set_title("LSTM Separation", fontweight='bold', fontsize=12)
+    axes[1].set_ylabel("Frequency")
+    
+    axes[2].imshow(to_spec(est_unet, processor_unet), aspect='auto', origin='lower', cmap='viridis')
+    axes[2].set_title("U-Net Separation", fontweight='bold', fontsize=12)
+    axes[2].set_ylabel("Frequency")
+    axes[2].set_xlabel("Time")
+    
+    plt.suptitle(f"Custom Audio Inference: {file_path.name}", fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    plt.show()
+    
+    # Audio playback
+    print("\n🔊 Audio Playback:\n")
+    print("Original Audio:")
+    display(Audio(audio, rate=sr))
+    
+    print("\nLSTM Separated Vocals:")
+    display(Audio(est_lstm, rate=sr))
+    
+    print("\nU-Net Separated Vocals:")
+    display(Audio(est_unet, rate=sr))
+    
+    print(f"\n{'='*70}")
+    print("✅ INFERENCE COMPLETE")
+    print(f"{'='*70}")
