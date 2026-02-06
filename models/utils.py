@@ -1887,7 +1887,7 @@ def sliding_window_inference(model, processor, audio, chunk_len=8.0, sr=22050, d
                 mask = mask[:mag.shape[0], :mag.shape[1]]
             
             est_mag = torch.log1p(mask * torch.expm1(mag))
-            est_seg = processor.to_waveform(est_mag.cpu().numpy(), phase.numpy())
+            est_seg = processor.to_waveform(est_mag.cpu().numpy(), phase.cpu().numpy())
         
         valid_len = min(len(segment), len(audio) - pos)
         # Ensure est_seg matches the expected length
@@ -1906,7 +1906,7 @@ def sliding_window_inference(model, processor, audio, chunk_len=8.0, sr=22050, d
 
 def to_spec(wav, processor):
     """Convert waveform to displayable spectrogram"""
-    s = processor.to_spectrogram(wav)[0].squeeze().numpy()
+    s = processor.to_spectrogram(wav)[0].squeeze().cpu().numpy()
     return s.T if s.shape[0] < s.shape[1] else s
 
 
