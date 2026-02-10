@@ -1437,10 +1437,10 @@ def plot_spectrograms_and_play_audio(mixture, prediction, ground_truth, sr=22050
 
 def initialize_model_a_lstm(device='cuda'):
     """Initialize Model A (LSTM) with full configuration."""
-    from models import model_A
+    from models import models
     
     processor = AudioProcessor(device=device)
-    model = model_A.SpectrogramMaskingLSTM(
+    model = models.SpectrogramMaskingLSTM(
         freq_bins=1025,
         hidden_size=512,
         num_layers=2,
@@ -1455,10 +1455,10 @@ def initialize_model_a_lstm(device='cuda'):
 
 def initialize_model_a_unet(device='cuda'):
     """Initialize Model A (U-Net) with default configuration."""
-    from models import model_A
+    from models import models
     
     processor = AudioProcessor(device=device)
-    model = model_A.TimeFrequencyDomainUNet(
+    model = models.TimeFrequencyDomainUNet(
         in_channels=1,
         out_channels=1,
         base_filters=32,

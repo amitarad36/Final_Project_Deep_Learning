@@ -1,9 +1,9 @@
-This is pdfTeX, Version 3.141592653-2.6-1.40.25 (MiKTeX 24.1) (preloaded format=pdflatex 2025.12.9)  17 JAN 2026 14:24
+This is pdfTeX, Version 3.141592653-2.6-1.40.25 (MiKTeX 24.1) (preloaded format=pdflatex 2025.12.9)  10 FEB 2026 10:06
 entering extended mode
  restricted \write18 enabled.
  %&-line parsing enabled.
-**./project_suggestion.tex
-(project_suggestion.tex
+**./report.tex
+(report.tex
 LaTeX2e <2023-11-01> patch level 1
 L3 programming layer <2024-01-04>
 (C:\Users\amita\AppData\Local\Programs\MiKTeX\tex/latex/base\article.cls
@@ -224,32 +224,145 @@ Package uniquecounter Info: New unique counter `rerunfilecheck' on input line 2
 (C:\Users\amita\AppData\Local\Programs\MiKTeX\tex/latex/parskip\parskip.sty
 Package: parskip 2021-03-14 v2.0h non-zero parskip adjustments
 )
+(C:\Users\amita\AppData\Local\Programs\MiKTeX\tex/latex/amsmath\amsmath.sty
+Package: amsmath 2023/05/13 v2.17o AMS math features
+\@mathmargin=\skip54
+
+For additional information on amsmath, use the `?' option.
+(C:\Users\amita\AppData\Local\Programs\MiKTeX\tex/latex/amsmath\amstext.sty
+Package: amstext 2021/08/26 v2.01 AMS text
+
+(C:\Users\amita\AppData\Local\Programs\MiKTeX\tex/latex/amsmath\amsgen.sty
+File: amsgen.sty 1999/11/30 v2.0 generic functions
+\@emptytoks=\toks23
+\ex@=\dimen159
+))
+(C:\Users\amita\AppData\Local\Programs\MiKTeX\tex/latex/amsmath\amsbsy.sty
+Package: amsbsy 1999/11/29 v1.2d Bold Symbols
+\pmbraise@=\dimen160
+)
+(C:\Users\amita\AppData\Local\Programs\MiKTeX\tex/latex/amsmath\amsopn.sty
+Package: amsopn 2022/04/08 v2.04 operator names
+)
+\inf@bad=\count278
+LaTeX Info: Redefining \frac on input line 234.
+\uproot@=\count279
+\leftroot@=\count280
+LaTeX Info: Redefining \overline on input line 399.
+LaTeX Info: Redefining \colon on input line 410.
+\classnum@=\count281
+\DOTSCASE@=\count282
+LaTeX Info: Redefining \ldots on input line 496.
+LaTeX Info: Redefining \dots on input line 499.
+LaTeX Info: Redefining \cdots on input line 620.
+\Mathstrutbox@=\box53
+\strutbox@=\box54
+LaTeX Info: Redefining \big on input line 722.
+LaTeX Info: Redefining \Big on input line 723.
+LaTeX Info: Redefining \bigg on input line 724.
+LaTeX Info: Redefining \Bigg on input line 725.
+\big@size=\dimen161
+LaTeX Font Info:    Redeclaring font encoding OML on input line 743.
+LaTeX Font Info:    Redeclaring font encoding OMS on input line 744.
+\macc@depth=\count283
+LaTeX Info: Redefining \bmod on input line 905.
+LaTeX Info: Redefining \pmod on input line 910.
+LaTeX Info: Redefining \smash on input line 940.
+LaTeX Info: Redefining \relbar on input line 970.
+LaTeX Info: Redefining \Relbar on input line 971.
+\c@MaxMatrixCols=\count284
+\dotsspace@=\muskip17
+\c@parentequation=\count285
+\dspbrk@lvl=\count286
+\tag@help=\toks24
+\row@=\count287
+\column@=\count288
+\maxfields@=\count289
+\andhelp@=\toks25
+\eqnshift@=\dimen162
+\alignsep@=\dimen163
+\tagshift@=\dimen164
+\tagwidth@=\dimen165
+\totwidth@=\dimen166
+\lineht@=\dimen167
+\@envbody=\toks26
+\multlinegap=\skip55
+\multlinetaggap=\skip56
+\mathdisplay@stack=\toks27
+LaTeX Info: Redefining \[ on input line 2953.
+LaTeX Info: Redefining \] on input line 2954.
+)
+(C:\Users\amita\AppData\Local\Programs\MiKTeX\tex/latex/graphics\graphicx.sty
+Package: graphicx 2021/09/16 v1.2d Enhanced LaTeX Graphics (DPC,SPQR)
+
+(C:\Users\amita\AppData\Local\Programs\MiKTeX\tex/latex/graphics\graphics.sty
+Package: graphics 2022/03/10 v1.4e Standard LaTeX Graphics (DPC,SPQR)
+
+(C:\Users\amita\AppData\Local\Programs\MiKTeX\tex/latex/graphics\trig.sty
+Package: trig 2021/08/11 v1.11 sin cos tan (DPC)
+)
+(C:\Users\amita\AppData\Local\Programs\MiKTeX\tex/latex/graphics-cfg\graphics.c
+fg
+File: graphics.cfg 2016/06/04 v1.11 sample graphics configuration
+)
+Package graphics Info: Driver file: pdftex.def on input line 107.
+
+(C:\Users\amita\AppData\Local\Programs\MiKTeX\tex/latex/graphics-def\pdftex.def
+File: pdftex.def 2022/09/22 v1.2b Graphics/color driver for pdftex
+))
+\Gin@req@height=\dimen168
+\Gin@req@width=\dimen169
+) (C:\Users\amita\AppData\Local\Programs\MiKTeX\tex/latex/caption\caption.sty
+Package: caption 2023/08/05 v3.6o Customizing captions (AR)
+(C:\Users\amita\AppData\Local\Programs\MiKTeX\tex/latex/caption\caption3.sty
+Package: caption3 2023/07/31 v2.4d caption3 kernel (AR)
+\caption@tempdima=\dimen170
+\captionmargin=\dimen171
+\caption@leftmargin=\dimen172
+\caption@rightmargin=\dimen173
+\caption@width=\dimen174
+\caption@indent=\dimen175
+\caption@parindent=\dimen176
+\caption@hangindent=\dimen177
+Package caption Info: Standard document class detected.
+)
+\c@caption@flags=\count290
+\c@continuedfloat=\count291
+Package caption Info: hyperref package is loaded.
+)
+(C:\Users\amita\AppData\Local\Programs\MiKTeX\tex/latex/caption\subcaption.sty
+Package: subcaption 2023/07/28 v1.6b Sub-captions (AR)
+Package caption Info: New subtype `subfigure' on input line 238.
+\c@subfigure=\count292
+Package caption Info: New subtype `subtable' on input line 238.
+\c@subtable=\count293
+)
 (C:\Users\amita\AppData\Local\Programs\MiKTeX\tex/latex/l3backend\l3backend-pdf
 tex.def
 File: l3backend-pdftex.def 2024-01-04 L3 backend support: PDF output (pdfTeX)
-\l__color_backend_stack_int=\count278
-\l__pdf_internal_box=\box53
-) (project_suggestion.aux)
-\openout1 = `project_suggestion.aux'.
+\l__color_backend_stack_int=\count294
+\l__pdf_internal_box=\box55
+) (report.aux)
+\openout1 = `report.aux'.
 
-LaTeX Font Info:    Checking defaults for OML/cmm/m/it on input line 17.
-LaTeX Font Info:    ... okay on input line 17.
-LaTeX Font Info:    Checking defaults for OMS/cmsy/m/n on input line 17.
-LaTeX Font Info:    ... okay on input line 17.
-LaTeX Font Info:    Checking defaults for OT1/cmr/m/n on input line 17.
-LaTeX Font Info:    ... okay on input line 17.
-LaTeX Font Info:    Checking defaults for T1/cmr/m/n on input line 17.
-LaTeX Font Info:    ... okay on input line 17.
-LaTeX Font Info:    Checking defaults for TS1/cmr/m/n on input line 17.
-LaTeX Font Info:    ... okay on input line 17.
-LaTeX Font Info:    Checking defaults for OMX/cmex/m/n on input line 17.
-LaTeX Font Info:    ... okay on input line 17.
-LaTeX Font Info:    Checking defaults for U/cmr/m/n on input line 17.
-LaTeX Font Info:    ... okay on input line 17.
-LaTeX Font Info:    Checking defaults for PD1/pdf/m/n on input line 17.
-LaTeX Font Info:    ... okay on input line 17.
-LaTeX Font Info:    Checking defaults for PU/pdf/m/n on input line 17.
-LaTeX Font Info:    ... okay on input line 17.
+LaTeX Font Info:    Checking defaults for OML/cmm/m/it on input line 22.
+LaTeX Font Info:    ... okay on input line 22.
+LaTeX Font Info:    Checking defaults for OMS/cmsy/m/n on input line 22.
+LaTeX Font Info:    ... okay on input line 22.
+LaTeX Font Info:    Checking defaults for OT1/cmr/m/n on input line 22.
+LaTeX Font Info:    ... okay on input line 22.
+LaTeX Font Info:    Checking defaults for T1/cmr/m/n on input line 22.
+LaTeX Font Info:    ... okay on input line 22.
+LaTeX Font Info:    Checking defaults for TS1/cmr/m/n on input line 22.
+LaTeX Font Info:    ... okay on input line 22.
+LaTeX Font Info:    Checking defaults for OMX/cmex/m/n on input line 22.
+LaTeX Font Info:    ... okay on input line 22.
+LaTeX Font Info:    Checking defaults for U/cmr/m/n on input line 22.
+LaTeX Font Info:    ... okay on input line 22.
+LaTeX Font Info:    Checking defaults for PD1/pdf/m/n on input line 22.
+LaTeX Font Info:    ... okay on input line 22.
+LaTeX Font Info:    Checking defaults for PU/pdf/m/n on input line 22.
+LaTeX Font Info:    ... okay on input line 22.
 
 *geometry* driver: auto-detecting
 *geometry* detected driver: pdftex
@@ -285,75 +398,85 @@ LaTeX Font Info:    ... okay on input line 17.
 * \@reversemarginfalse
 * (1in=72.27pt=25.4mm, 1cm=28.453pt)
 
-Package hyperref Info: Link coloring OFF on input line 17.
-(project_suggestion.out) (project_suggestion.out)
+Package hyperref Info: Link coloring OFF on input line 22.
+(report.out) (report.out)
 \@outlinefile=\write3
-\openout3 = `project_suggestion.out'.
+\openout3 = `report.out'.
 
-LaTeX Font Info:    External font `cmex10' loaded for size
-(Font)              <12> on input line 20.
-LaTeX Font Info:    External font `cmex10' loaded for size
-(Font)              <8> on input line 20.
-LaTeX Font Info:    External font `cmex10' loaded for size
-(Font)              <6> on input line 20.
+
+(C:\Users\amita\AppData\Local\Programs\MiKTeX\tex/context/base/mkii\supp-pdf.mk
+ii
+[Loading MPS to PDF converter (version 2006.09.02).]
+\scratchcounter=\count295
+\scratchdimen=\dimen178
+\scratchbox=\box56
+\nofMPsegments=\count296
+\nofMParguments=\count297
+\everyMPshowfont=\toks28
+\MPscratchCnt=\count298
+\MPscratchDim=\dimen179
+\MPnumerator=\count299
+\makeMPintoPDFobject=\count300
+\everyMPtoPDFconversion=\toks29
+)
+(C:\Users\amita\AppData\Local\Programs\MiKTeX\tex/latex/epstopdf-pkg\epstopdf-b
+ase.sty
+Package: epstopdf-base 2020-01-24 v2.11 Base part for package epstopdf
+Package epstopdf-base Info: Redefining graphics rule for `.eps' on input line 4
+85.
+
+(C:\Users\amita\AppData\Local\Programs\MiKTeX\tex/latex/00miktex\epstopdf-sys.c
+fg
+File: epstopdf-sys.cfg 2021/03/18 v2.0 Configuration of epstopdf for MiKTeX
+))
+Package caption Info: Begin \AtBeginDocument code.
+Package caption Info: End \AtBeginDocument code.
  [1
 
 {C:/Users/amita/AppData/Local/MiKTeX/fonts/map/pdftex/pdftex.map}]
-LaTeX Font Info:    External font `cmex10' loaded for size
-(Font)              <10.95> on input line 69.
- [2]
-! Misplaced alignment tab character &.
-<argument> Feasibility &
-                         Logistics
-l.111 \section{Feasibility & Logistics}
-                                       
-I can't figure out why you would want to use a tab mark
-here. If you just want an ampersand, the remedy is
-simple: Just type `I\&' now. But if some right brace
-up above has ended a previous alignment prematurely,
-you're probably due for more error messages, and you
-might try typing `S' now just to see what is salvageable.
+[2]
 
+LaTeX Warning: `h' float specifier changed to `ht'.
 
-Package hyperref Warning: Token not allowed in a PDF string (Unicode):
-(hyperref)                removing `alignment tab' on input line 111.
+[3]
+Overfull \hbox (1.4546pt too wide) in paragraph at lines 181--182
+\OT1/cmr/bx/n/10.95 Motivation: \OT1/cmr/m/n/10.95 Multi-head self-attention ca
+n cap-ture long-range de-pen-den-cies bet-ter than LSTMs,
+ []
 
-[3] (project_suggestion.aux)
+[4] [5] [6] (report.aux)
  ***********
 LaTeX2e <2023-11-01> patch level 1
 L3 programming layer <2024-01-04>
  ***********
-
-
-Package rerunfilecheck Warning: File `project_suggestion.out' has changed.
-(rerunfilecheck)                Rerun to get outlines right
-(rerunfilecheck)                or use package `bookmark'.
-
-Package rerunfilecheck Info: Checksums for `project_suggestion.out':
-(rerunfilecheck)             Before: 729C7FAA8D12F5D0CB8D741121F8D419;1843
-(rerunfilecheck)             After:  AB703C8A341E4C0D51BA727D97C0AFE7;2391.
+Package rerunfilecheck Info: File `report.out' has not changed.
+(rerunfilecheck)             Checksum: CEAA11D1BC663518DE10B9F38185FAA9;4090.
  ) 
 Here is how much of TeX's memory you used:
- 8757 strings out of 474486
- 139271 string characters out of 5743755
- 1937542 words of memory out of 5000000
- 30953 multiletter control sequences out of 15000+600000
- 564402 words of font info for 57 fonts, out of 8000000 for 9000
+ 11732 strings out of 474486
+ 188822 string characters out of 5743755
+ 1939542 words of memory out of 5000000
+ 33850 multiletter control sequences out of 15000+600000
+ 566288 words of font info for 64 fonts, out of 8000000 for 9000
  1141 hyphenation exceptions out of 8191
- 75i,6n,79p,1209b,533s stack positions out of 10000i,1000n,20000p,200000b,200000s
- <C:\Users\amita\AppData\Local\MiKTeX\fonts/pk/ljfour/jknappen/ec/dpi600\tcrm
-1095.pk><C:/Users/amita/AppData/Local/Programs/MiKTeX/fonts/type1/public/amsfon
-ts/cm/cmbx10.pfb><C:/Users/amita/AppData/Local/Programs/MiKTeX/fonts/type1/publ
-ic/amsfonts/cm/cmbx12.pfb><C:/Users/amita/AppData/Local/Programs/MiKTeX/fonts/t
-ype1/public/amsfonts/cm/cmmi10.pfb><C:/Users/amita/AppData/Local/Programs/MiKTe
-X/fonts/type1/public/amsfonts/cm/cmr10.pfb><C:/Users/amita/AppData/Local/Progra
-ms/MiKTeX/fonts/type1/public/amsfonts/cm/cmr12.pfb><C:/Users/amita/AppData/Loca
-l/Programs/MiKTeX/fonts/type1/public/amsfonts/cm/cmsy10.pfb><C:/Users/amita/App
-Data/Local/Programs/MiKTeX/fonts/type1/public/amsfonts/cm/cmti10.pfb><C:/Users/
-amita/AppData/Local/Programs/MiKTeX/fonts/type1/public/amsfonts/cm/cmtt10.pfb>
-Output written on project_suggestion.pdf (3 pages, 131155 bytes).
+ 75i,9n,79p,1197b,560s stack positions out of 10000i,1000n,20000p,200000b,200000s
+ <C:\Users\amita\AppData\Local\MiKTeX\fonts/pk/ljfour/jknappen/ec/dpi600\tcbx
+1095.pk> <C:\Users\amita\AppData\Local\MiKTeX\fonts/pk/ljfour/jknappen/ec/dpi60
+0\tcrm1095.pk> <C:\Users\amita\AppData\Local\MiKTeX\fonts/pk/ljfour/jknappen/ec
+/dpi600\tcrm1000.pk><C:/Users/amita/AppData/Local/Programs/MiKTeX/fonts/type1/p
+ublic/amsfonts/cm/cmbx10.pfb><C:/Users/amita/AppData/Local/Programs/MiKTeX/font
+s/type1/public/amsfonts/cm/cmbx12.pfb><C:/Users/amita/AppData/Local/Programs/Mi
+KTeX/fonts/type1/public/amsfonts/cm/cmmi10.pfb><C:/Users/amita/AppData/Local/Pr
+ograms/MiKTeX/fonts/type1/public/amsfonts/cm/cmr10.pfb><C:/Users/amita/AppData/
+Local/Programs/MiKTeX/fonts/type1/public/amsfonts/cm/cmr12.pfb><C:/Users/amita/
+AppData/Local/Programs/MiKTeX/fonts/type1/public/amsfonts/cm/cmr8.pfb><C:/Users
+/amita/AppData/Local/Programs/MiKTeX/fonts/type1/public/amsfonts/cm/cmsy10.pfb>
+<C:/Users/amita/AppData/Local/Programs/MiKTeX/fonts/type1/public/amsfonts/cm/cm
+ti10.pfb><C:/Users/amita/AppData/Local/Programs/MiKTeX/fonts/type1/public/amsfo
+nts/cm/cmtt10.pfb>
+Output written on report.pdf (6 pages, 169057 bytes).
 PDF statistics:
- 115 PDF objects out of 1000 (max. 8388607)
- 23 named destinations out of 1000 (max. 500000)
- 73 words of extra memory for PDF output out of 10000 (max. 10000000)
+ 214 PDF objects out of 1000 (max. 8388607)
+ 44 named destinations out of 1000 (max. 500000)
+ 193 words of extra memory for PDF output out of 10000 (max. 10000000)
 
