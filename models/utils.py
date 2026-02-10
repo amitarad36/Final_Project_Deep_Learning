@@ -1905,13 +1905,114 @@ def sliding_window_inference(model, processor, audio, chunk_len=8.0, sr=22050, d
 
 
 def to_spec(wav, processor):
-    """Convert waveform to displayable spectrogram"""
+    """
+    Convert waveform to displayable spectrogram.
+    Returns shape (freq, time) for imshow: freq on y-axis (vertical), time on x-axis (horizontal).
+    Frequency bins ~1025, time frames >> 1025, so if shape[0] < shape[1], already (freq, time).
+    """
     s = processor.to_spectrogram(wav)[0].squeeze().cpu().numpy()
-    return s.T if s.shape[0] < s.shape[1] else s
+    # If first dimension is smaller, it's likely (freq, time) already - keep it
+    # If first dimension is larger, it's likely (time, freq) - transpose it
+    return s if s.shape[0] < s.shape[1] else s.T
+
+
+def unet_inference_accelerator(model, processor, audio, chunk_len=8.0, sr=22050, device='cuda', batch_size=16):
+    """
+    Accelerated inference for U-Net by batching chunks through the forward pass in parallel.
+    Unlike training, inference typically processes one chunk at a time (batch_size=1),
+    but the model's forward pass supports batching - this function exploits that!
+    
+    Args:
+        model: U-Net model
+        processor: AudioProcessor for spectrogram conversion
+        audio: Input audio waveform
+        chunk_len: Length of each chunk in seconds (default: 8.0)
+        sr: Sample rate (default: 22050)
+        device: Device to run inference on (default: 'cuda')
+        batch_size: Number of chunks to process in parallel (default: 16)
+                    Increase for more speed (if GPU memory allows), decrease if OOM
+    
+    Returns:
+        Separated audio waveform
+    """
+    chunk_samples = int(chunk_len * sr)
+    stride = chunk_samples // 2  # 50% overlap
+    output = np.zeros_like(audio)
+    weights = np.zeros_like(audio)
+    
+    # Step 1: Collect all chunks first
+    chunks_data = []
+    for pos in range(0, len(audio), stride):
+        segment = audio[pos:pos + chunk_samples]
+        if len(segment) < chunk_samples:
+            segment = np.pad(segment, (0, chunk_samples - len(segment)))
+        
+        # Convert to spectrogram
+        spec = processor.to_spectrogram(segment)
+        mag, phase = spec[0].squeeze(), spec[1].squeeze()
+        if mag.dim() > 1 and mag.shape[0] < mag.shape[1]:
+            mag = mag.t()
+        
+        valid_len = min(len(segment), len(audio) - pos)
+        chunks_data.append({
+            'pos': pos,
+            'mag': mag,
+            'phase': phase,
+            'valid_len': valid_len
+        })
+    
+    total_chunks = len(chunks_data)
+    print(f"   Processing: ", end="", flush=True)
+    
+    # Step 2: Process chunks in batches through forward pass
+    model.eval()
+    with torch.no_grad():
+        for batch_start in range(0, total_chunks, batch_size):
+            if batch_start % (batch_size * 5) == 0:
+                print(".", end="", flush=True)
+            
+            batch_end = min(batch_start + batch_size, total_chunks)
+            batch_chunks = chunks_data[batch_start:batch_end]
+            
+            # Stack magnitudes into a batch tensor [batch_size, 1, freq, time]
+            batch_mags = torch.stack([chunk['mag'].unsqueeze(0) for chunk in batch_chunks]).to(device)
+            
+            # Forward pass on entire batch (THIS IS THE KEY - parallel processing!)
+            batch_masks = model(batch_mags)
+            
+            # Step 3: Reconstruct each chunk in the batch
+            for i, chunk in enumerate(batch_chunks):
+                mask = batch_masks[i].squeeze()
+                mag = chunk['mag']
+                phase = chunk['phase']
+                pos = chunk['pos']
+                valid_len = chunk['valid_len']
+                
+                # Ensure shapes match
+                if mask.shape != mag.shape:
+                    mask = mask[:mag.shape[0], :mag.shape[1]]
+                
+                # Apply mask in log domain
+                est_mag = torch.log1p(mask * torch.expm1(mag))
+                est_seg = processor.to_waveform(est_mag.cpu().numpy(), phase.cpu().numpy())
+                
+                # Ensure est_seg matches expected length
+                if len(est_seg) > valid_len:
+                    est_seg = est_seg[:valid_len]
+                elif len(est_seg) < valid_len:
+                    est_seg = np.pad(est_seg, (0, valid_len - len(est_seg)))
+                
+                # Apply window and accumulate
+                window = np.hanning(chunk_samples)[:valid_len]
+                output[pos:pos + valid_len] += est_seg * window
+                weights[pos:pos + valid_len] += window
+    
+    print(" Done!")
+    return np.divide(output, weights, where=weights > 0, out=output.copy())
 
 
 def compare_models_on_audio_file(file_path, model_lstm, model_unet, processor_lstm, 
-                                  processor_unet, device, sr=22050, duration=None):
+                                  processor_unet, device, sr=22050, duration=None, unet_batch_size=16):
     """
     Load a custom audio file, run inference with both LSTM and U-Net models,
     and display spectrograms + audio playback for comparison.
@@ -1925,6 +2026,8 @@ def compare_models_on_audio_file(file_path, model_lstm, model_unet, processor_ls
         device: torch device ('cuda' or 'cpu')
         sr: Sample rate (default: 22050)
         duration: Duration to process in seconds (None for full file)
+        unet_batch_size: Batch size for U-Net accelerated inference (default: 16)
+                         Increase for more speed (if GPU memory allows), decrease if OOM
     """
     import librosa
     import matplotlib.pyplot as plt
@@ -1963,12 +2066,12 @@ def compare_models_on_audio_file(file_path, model_lstm, model_unet, processor_ls
     model_unet.eval()
     
     print("\n🚀 Running inference...")
-    print("LSTM:")
+    print("LSTM (sequential, batch_size=1):")
     est_lstm = sliding_window_inference(model_lstm, processor_lstm, audio, 
                                        chunk_len=8.0, sr=sr, device=device)
-    print("U-Net:")
-    est_unet = sliding_window_inference(model_unet, processor_unet, audio,
-                                       chunk_len=8.0, sr=sr, device=device)
+    print(f"U-Net (accelerated batched forward pass, batch_size={unet_batch_size}):")
+    est_unet = unet_inference_accelerator(model_unet, processor_unet, audio,
+                                         chunk_len=8.0, sr=sr, device=device, batch_size=unet_batch_size)
     
     # Visualization
     print(f"\n{'='*70}")
