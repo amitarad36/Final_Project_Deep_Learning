@@ -8,6 +8,8 @@ from IPython.display import Audio, display
 import librosa
 import torch.nn as nn
 import torch.optim as optim
+import torchaudio
+from transformers import WavLMModel, Wav2Vec2FeatureExtractor
 
 # Configure CUDA memory to avoid fragmentation
 os.environ['PYTORCH_CUDA_ALLOC_CONF'] = 'expandable_segments:True'
@@ -19,6 +21,120 @@ try:
         get_ipython().run_line_magic('matplotlib', 'inline')
 except:
     pass
+
+# ==============================================================================
+# Neural Linearizer Utilities
+# ==============================================================================
+
+def squeeze(x):
+    """
+    Reshapes spectrogram to be deeper and smaller spatially.
+    (Batch, 1, F, T) -> (Batch, 4, F/2, T/2)
+    """
+    b, c, h, w = x.size()
+    # Handle odd dimensions by trimming 1 pixel
+    if h % 2 != 0: x = x[:, :, :-1, :]
+    if w % 2 != 0: x = x[:, :, :, :-1]
+    
+    b, c, h, w = x.size()
+    x = x.view(b, c, h // 2, 2, w // 2, 2)
+    x = x.permute(0, 1, 3, 5, 2, 4).contiguous()
+    x = x.view(b, c * 4, h // 2, w // 2)
+    return x
+
+def unsqueeze(x):
+    """
+    Inverse of squeeze.
+    (Batch, 4, F/2, T/2) -> (Batch, 1, F, T)
+    """
+    b, c, h, w = x.size()
+    out_c = c // 4
+    x = x.view(b, out_c, 2, 2, h, w)
+    x = x.permute(0, 1, 4, 2, 5, 3).contiguous()
+    x = x.view(b, out_c, h * 2, w * 2)
+    return x
+
+class StyleEncoderWrapper(nn.Module):
+    """
+    Wrapper to load and run WavLM for style extraction.
+    """
+    def __init__(self, device='cuda'):
+        super().__init__()
+        self.device = device
+        print("Loading WavLM...")
+        # Force use of safetensors to avoid torch.load security vulnerability
+        self.model = WavLMModel.from_pretrained("microsoft/wavlm-base-plus-sv", use_safetensors=True).to(device)
+        self.model.eval() # Always freeze
+        self.feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained("microsoft/wavlm-base-plus-sv")
+        # Resampler: 22050 -> 16000 (WavLM requires 16k)
+        self.resampler = torchaudio.transforms.Resample(orig_freq=22050, new_freq=16000).to(device)
+
+    def get_style(self, audio_waveform):
+        """
+        Input: Audio waveform (Batch, Time) at 22050Hz
+        Output: Style Vector (Batch, 768)
+        """
+        # 1. Resample to 16k
+        audio_16k = self.resampler(audio_waveform)
+        
+        # 2. Extract Features
+        # Move to CPU for feature_extractor (numpy based usually), then back to GPU
+        inputs = self.feature_extractor(
+            [a.cpu().numpy() for a in audio_16k], 
+            sampling_rate=16000, 
+            return_tensors="pt", 
+            padding=True
+        ).to(self.device)
+        
+        # 3. Run Model
+        with torch.no_grad():
+            outputs = self.model(**inputs)
+            # Mean pooling over time to get one vector per song
+            style_emb = outputs.last_hidden_state.mean(dim=1)
+            
+        return style_emb
+
+class ContentEncoderWrapper(nn.Module):
+    """
+    Wrapper for Wav2Vec2 to extract content features.
+    Used for content loss (L_content).
+    """
+    def __init__(self, device='cuda'):
+        super().__init__()
+        self.device = device
+        print("Loading Wav2Vec2 for Content...")
+        from transformers import Wav2Vec2Model, Wav2Vec2FeatureExtractor
+        self.model = Wav2Vec2Model.from_pretrained("facebook/wav2vec2-base", use_safetensors=True).to(device)
+        self.model.eval()  # Always frozen
+        self.feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained("facebook/wav2vec2-base")
+        self.resampler = torchaudio.transforms.Resample(orig_freq=22050, new_freq=16000).to(device)
+    
+    def get_content(self, audio_waveform):
+        """
+        Input: Audio waveform (Batch, Time) at 22050Hz
+        Output: Content Features (Batch, Time_frames, 768)
+        """
+        # 1. Resample to 16k
+        audio_16k = self.resampler(audio_waveform)
+        
+        # 2. Extract Features
+        inputs = self.feature_extractor(
+            [a.cpu().numpy() for a in audio_16k],
+            sampling_rate=16000,
+            return_tensors="pt",
+            padding=True
+        ).to(self.device)
+        
+        # 3. Run Model (Keep gradients if in training mode)
+        if self.training:
+            outputs = self.model(**inputs)
+            content_feat = outputs.last_hidden_state
+        else:
+            with torch.no_grad():
+                outputs = self.model(**inputs)
+                content_feat = outputs.last_hidden_state
+        
+        return content_feat
 
 # ==============================================================================
 # Universal Trainer
@@ -312,6 +428,254 @@ class Separator:
             else:
                 est = self.model(mix)
                 return est.squeeze().cpu().numpy()
+
+# ==============================================================================
+# Linearizer Trainer (Multi-Objective: Reconstruction + Content + Style)
+# ==============================================================================
+
+class LinearizerTrainer:
+    """
+    Multi-objective trainer for Neural Linearizer.
+    Supports 3 loss terms:
+    - Reconstruction (MSE on spectrograms)
+    - Content (L1 on Wav2Vec2 features)
+    - Style (Cosine similarity on WavLM embeddings)
+    """
+    def __init__(self, 
+                 model, 
+                 style_encoder, 
+                 content_encoder,
+                 processor, 
+                 train_loader, 
+                 val_loader, 
+                 optimizer, 
+                 device='cuda',
+                 lambda_rec=1.0,
+                 lambda_content=0.0,
+                 lambda_style=0.0):
+        
+        self.model = model.to(device)
+        self.style_encoder = style_encoder.to(device)
+        self.content_encoder = content_encoder.to(device)
+        self.processor = processor
+        self.train_loader = train_loader
+        self.val_loader = val_loader
+        self.optimizer = optimizer
+        self.device = device
+        
+        # Hyperparameters
+        self.lambda_rec = lambda_rec
+        self.lambda_content = lambda_content
+        self.lambda_style = lambda_style
+        
+        # Loss Functions
+        self.mse_loss = nn.MSELoss()
+        self.l1_loss = nn.L1Loss()
+        self.cosine_loss = nn.CosineEmbeddingLoss()
+        
+        # Identity Matrix for monitoring
+        self.I = torch.eye(4).to(device)
+        
+        self.history = {
+            'total_loss': [], 
+            'rec_loss': [], 
+            'content_loss': [], 
+            'style_loss': [],
+            'identity_error': []
+        }
+
+    def to_waveform_with_gradients(self, mag, phase):
+        """
+        Converts Spectrogram -> Waveform while preserving gradients.
+        Unlike processor.to_waveform() which detaches and converts to numpy,
+        this keeps tensors intact so gradients can backprop to the model.
+        """
+        # mag, phase: (B, 1, F, T) -> squeeze channel -> (B, F, T)
+        mag = mag.squeeze(1)
+        phase = phase.squeeze(1)
+        
+        # Pad back to 1025 bins if cropped by squeeze (n_fft=2048 needs 1025)
+        if mag.shape[1] == 1024:
+            # Add zero bin at Nyquist frequency
+            mag = torch.nn.functional.pad(mag, (0, 0, 0, 1), value=0)  # (B, 1025, T)
+            phase = torch.nn.functional.pad(phase, (0, 0, 0, 1), value=0)
+        
+        complex_spec = torch.polar(mag, phase)
+        
+        # Inverse STFT
+        waveform = torch.istft(
+            complex_spec, 
+            n_fft=self.processor.n_fft, 
+            hop_length=self.processor.hop_length, 
+            window=self.processor.window,
+            return_complex=False
+        )
+        return waveform
+
+    def process_batch(self, batch):
+        """
+        Processes batch and returns all necessary tensors for loss computation.
+        Supports both old format (mix/tgt) and new format (input/target).
+        """
+        # Handle both old and new data formats
+        if 'target' in batch:
+            target_data = batch['target']  # New vocals dataset format
+        elif 'tgt' in batch:
+            target_data = batch['tgt']     # Old stage1/stage2 format
+        else:
+            raise KeyError("Batch must contain either 'target' or 'tgt' key")
+        
+        # 1. Prepare Target Spectrogram & Waveform
+        if isinstance(target_data, tuple) or isinstance(target_data, list):
+            mag, phase = target_data
+            mag = mag.to(self.device)
+            phase = phase.to(self.device)
+            if mag.dim() == 3: mag = mag.unsqueeze(1)
+            if phase.dim() == 3: phase = phase.unsqueeze(1)
+            
+            # Convert to waveform while preserving gradients
+            target_wav = self.to_waveform_with_gradients(mag, phase)
+            spec_input = mag
+        else:
+            target_wav = target_data.to(self.device)
+            mag, phase = self.processor.to_spectrogram(target_wav)
+            if mag.dim() == 3: mag = mag.unsqueeze(1)
+            if phase.dim() == 3: phase = phase.unsqueeze(1)
+            spec_input = mag
+
+        # 2. Extract Target Style & Content (frozen encoders)
+        with torch.no_grad():
+            target_style_vec = self.style_encoder.get_style(target_wav)
+            
+            target_content_feat = None
+            if self.lambda_content > 0:
+                target_content_feat = self.content_encoder.get_content(target_wav)
+
+        # 3. Forward Pass (Linearizer)
+        spec_squeezed = squeeze(spec_input)
+        pred_squeezed, A_matrix = self.model(spec_squeezed, target_style_vec)
+        
+        # 4. Process Output
+        pred_spec = unsqueeze(pred_squeezed)
+        
+        # Crop target to match output (1025 -> 1024)
+        target_spec_cropped = spec_input[:, :, :pred_spec.shape[2], :pred_spec.shape[3]]
+        
+        # 5. Convert Pred Spectrogram -> Pred Waveform (preserving gradients)
+        # Reuse phase from input (standard practice)
+        phase_cropped = phase[:, :, :pred_spec.shape[2], :pred_spec.shape[3]]
+        pred_wav = self.to_waveform_with_gradients(pred_spec, phase_cropped)
+
+        return {
+            'pred_spec': pred_spec,
+            'target_spec': target_spec_cropped,
+            'pred_wav': pred_wav,
+            'target_wav': target_wav,
+            'target_style': target_style_vec,
+            'target_content': target_content_feat,
+            'A_matrix': A_matrix
+        }
+
+    def train_epoch(self, epoch_idx):
+        self.model.train()
+        logs = {'total': 0, 'rec': 0, 'cont': 0, 'sty': 0, 'id': 0}
+        batch_count = 0
+        
+        try: 
+            from tqdm.notebook import tqdm
+        except ImportError: 
+            from tqdm import tqdm
+        
+        pbar = tqdm(self.train_loader, desc=f"Ep {epoch_idx}")
+        
+        for batch in pbar:
+            self.optimizer.zero_grad()
+            
+            # Run Pipeline
+            data = self.process_batch(batch)
+            
+            # --- LOSS 1: RECONSTRUCTION (MSE on Spectrograms) ---
+            L_rec = self.mse_loss(data['pred_spec'], data['target_spec'])
+            
+            # --- LOSS 2: CONTENT (L1 on Wav2Vec2 Features) ---
+            L_content = torch.tensor(0.0, device=self.device)
+            if self.lambda_content > 0:
+                pred_content = self.content_encoder.get_content(data['pred_wav'])
+                # Match lengths (ISTFT can cause 1-sample difference)
+                min_len = min(pred_content.size(1), data['target_content'].size(1))
+                L_content = self.l1_loss(
+                    pred_content[:, :min_len, :], 
+                    data['target_content'][:, :min_len, :]
+                )
+
+            # --- LOSS 3: STYLE (Cosine Distance on WavLM Features) ---
+            L_style = torch.tensor(0.0, device=self.device)
+            if self.lambda_style > 0:
+                pred_style = self.style_encoder.get_style(data['pred_wav'])
+                # Cosine embedding loss expects label 1 (similar)
+                target_ones = torch.ones(pred_style.size(0), device=self.device)
+                L_style = self.cosine_loss(pred_style, data['target_style'], target_ones)
+
+            # --- TOTAL LOSS --- 
+            loss = (self.lambda_rec * L_rec) + \
+                   (self.lambda_content * L_content) + \
+                   (self.lambda_style * L_style)
+            
+            # Monitor Identity Error
+            I_batch = self.I.expand_as(data['A_matrix'])
+            id_error = torch.mean((data['A_matrix'] - I_batch) ** 2)
+
+            loss.backward()
+            self.optimizer.step()
+            
+            # Logging
+            logs['total'] += loss.item()
+            logs['rec'] += L_rec.item()
+            logs['cont'] += L_content.item()
+            logs['sty'] += L_style.item()
+            logs['id'] += id_error.item()
+            batch_count += 1
+            
+            pbar.set_postfix({
+                'L_tot': f"{loss.item():.4f}", 
+                'L_rec': f"{L_rec.item():.4f}",
+                'A-Err': f"{id_error.item():.4f}"
+            })
+
+        # Average logs
+        for k in logs: 
+            logs[k] /= max(1, batch_count)
+        return logs
+
+    def train(self, num_epochs, save_path=None):
+        print(f"\n{'='*60}")
+        print(f"Training Linearizer - {num_epochs} Epochs")
+        print(f"Config: λ_rec={self.lambda_rec} | λ_content={self.lambda_content} | λ_style={self.lambda_style}")
+        print(f"{'='*60}\n")
+        
+        best_loss = float('inf')
+        
+        for epoch in range(num_epochs):
+            metrics = self.train_epoch(epoch + 1)
+            
+            self.history['total_loss'].append(metrics['total'])
+            self.history['rec_loss'].append(metrics['rec'])
+            self.history['content_loss'].append(metrics['cont'])
+            self.history['style_loss'].append(metrics['sty'])
+            self.history['identity_error'].append(metrics['id'])
+            
+            print(f"Epoch {epoch+1}: Total {metrics['total']:.5f} | Rec {metrics['rec']:.5f} | "
+                  f"Content {metrics['cont']:.5f} | Style {metrics['sty']:.5f} | A-Err {metrics['id']:.5f}")
+            
+            if save_path and metrics['total'] < best_loss:
+                best_loss = metrics['total']
+                torch.save({
+                    'model_state_dict': self.model.state_dict(),
+                    'history': self.history
+                }, save_path)
+                print(f"✅ Saved Best Model")
+                
+        return self.history
 
 # ==============================================================================
 # Metrics Calculation (use this in notebooks!!!)
@@ -610,6 +974,56 @@ def plot_loss_from_checkpoint(ckpt_path, title="Loss Curves from Checkpoint"):
             print("⚠️  No training data found in checkpoint or epoch files.")
     except Exception as e:
         print(f"❌ Error plotting checkpoint: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+def plot_linearizer_losses(history, title="Linearizer Training"):
+    """
+    Plots all loss components from Linearizer training.
+    Supports: total_loss, rec_loss, content_loss, style_loss, identity_error
+    """
+    try:
+        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+        
+        epochs = range(1, len(history['total_loss']) + 1)
+        
+        # Plot 1: Total Loss
+        axes[0, 0].plot(epochs, history['total_loss'], 'o-', color='navy', linewidth=2)
+        axes[0, 0].set_title('Total Loss', fontweight='bold')
+        axes[0, 0].set_xlabel('Epoch')
+        axes[0, 0].set_ylabel('Loss')
+        axes[0, 0].grid(True, alpha=0.3)
+        
+        # Plot 2: Reconstruction Loss
+        axes[0, 1].plot(epochs, history['rec_loss'], 'o-', color='green', linewidth=2)
+        axes[0, 1].set_title('Reconstruction Loss (MSE)', fontweight='bold')
+        axes[0, 1].set_xlabel('Epoch')
+        axes[0, 1].set_ylabel('Loss')
+        axes[0, 1].grid(True, alpha=0.3)
+        
+        # Plot 3: Content + Style Loss
+        axes[1, 0].plot(epochs, history['content_loss'], 'o-', color='orange', label='Content (L1)', linewidth=2)
+        axes[1, 0].plot(epochs, history['style_loss'], 's-', color='purple', label='Style (Cosine)', linewidth=2)
+        axes[1, 0].set_title('Content & Style Loss', fontweight='bold')
+        axes[1, 0].set_xlabel('Epoch')
+        axes[1, 0].set_ylabel('Loss')
+        axes[1, 0].legend()
+        axes[1, 0].grid(True, alpha=0.3)
+        
+        # Plot 4: Identity Error (A matrix convergence)
+        axes[1, 1].plot(epochs, history['identity_error'], 'o-', color='red', linewidth=2)
+        axes[1, 1].set_title('A Matrix Distance from Identity', fontweight='bold')
+        axes[1, 1].set_xlabel('Epoch')
+        axes[1, 1].set_ylabel('||A - I||²')
+        axes[1, 1].grid(True, alpha=0.3)
+        
+        plt.suptitle(title, fontsize=16, fontweight='bold', y=0.995)
+        plt.tight_layout()
+        plt.show()
+        
+    except Exception as e:
+        print(f"❌ Error plotting losses: {e}")
         import traceback
         traceback.print_exc()
 
@@ -1136,6 +1550,131 @@ def show_spectrogram(tensor, title="Spectrogram"):
 
 
 # ===============================================================================
+# LINEARIZER DATASETS (VOCALS ONLY)
+# ===============================================================================
+
+class VocalsDatasetPhase1(Dataset):
+    """
+    Phase 1 Dataset: Identity Reconstruction (Same Singer).
+    Returns the same vocal chunk as both input and target.
+    Used to train the Linearizer to learn identity mapping (A ≈ I).
+    """
+    def __init__(self, vocals_dir):
+        self.vocals_dir = Path(vocals_dir)
+        self.chunks = sorted(list(self.vocals_dir.glob('*.npy')))
+        
+    def __len__(self):
+        return len(self.chunks)
+    
+    def __getitem__(self, idx):
+        chunk = np.load(self.chunks[idx])
+        chunk_tensor = torch.tensor(chunk, dtype=torch.float32)
+        
+        # Phase 1: Same chunk as input and target
+        return {
+            'input': chunk_tensor,
+            'target': chunk_tensor,
+            'singer': self.chunks[idx].stem.split('_chunk')[0]
+        }
+
+
+class VocalsDatasetPhase2(Dataset):
+    """
+    Phase 2 Dataset: Cross-Singer Style Transfer.
+    Returns different vocal chunks from different singers.
+    Used to train the Linearizer for voice conversion.
+    """
+    def __init__(self, vocals_dir):
+        self.vocals_dir = Path(vocals_dir)
+        
+        # Organize chunks by singer
+        self.singers = {}
+        for chunk_file in self.vocals_dir.glob('*.npy'):
+            singer = chunk_file.stem.split('_chunk')[0]
+            if singer not in self.singers:
+                self.singers[singer] = []
+            self.singers[singer].append(chunk_file)
+        
+        # Create list of all singers with multiple chunks
+        self.singer_list = [s for s, chunks in self.singers.items() if len(chunks) >= 2]
+        
+        if len(self.singer_list) < 2:
+            raise ValueError(f"Need at least 2 singers with multiple chunks. Found {len(self.singer_list)}")
+        
+        # Create flat list of chunks for indexing
+        self.all_chunks = []
+        for singer in self.singer_list:
+            self.all_chunks.extend(self.singers[singer])
+    
+    def __len__(self):
+        return len(self.all_chunks)
+    
+    def __getitem__(self, idx):
+        # Input chunk
+        input_file = self.all_chunks[idx]
+        input_singer = input_file.stem.split('_chunk')[0]
+        input_chunk = np.load(input_file)
+        
+        # Target chunk: Different singer, different chunk
+        target_singers = [s for s in self.singer_list if s != input_singer]
+        target_singer = np.random.choice(target_singers)
+        target_file = np.random.choice(self.singers[target_singer])
+        target_chunk = np.load(target_file)
+        
+        return {
+            'input': torch.tensor(input_chunk, dtype=torch.float32),
+            'target': torch.tensor(target_chunk, dtype=torch.float32),
+            'input_singer': input_singer,
+            'target_singer': target_singer
+        }
+
+
+def get_vocals_loaders(data_dir, phase=1, split='train', batch_size=8, num_workers=None):
+    """
+    Creates DataLoader for Linearizer training.
+    
+    Args:
+        data_dir: Root data directory
+        phase: 1 for identity (same singer), 2 for style transfer (different singers)
+        split: 'train', 'val', or 'test'
+        batch_size: Batch size
+        num_workers: Number of workers (default: 0 for Windows, 4 otherwise)
+    
+    Returns:
+        DataLoader
+    """
+    vocals_dir = Path(data_dir) / 'vocals' / split
+    
+    if not vocals_dir.exists():
+        raise FileNotFoundError(f"Vocals directory not found: {vocals_dir}")
+    
+    # Select dataset based on phase
+    if phase == 1:
+        dataset = VocalsDatasetPhase1(vocals_dir)
+    elif phase == 2:
+        dataset = VocalsDatasetPhase2(vocals_dir)
+    else:
+        raise ValueError(f"Invalid phase: {phase}. Must be 1 or 2.")
+    
+    # Auto-detect num_workers
+    if num_workers is None:
+        import platform
+        num_workers = 0 if platform.system() == 'Windows' else 4
+    
+    loader = DataLoader(
+        dataset,
+        batch_size=batch_size,
+        shuffle=(split == 'train'),
+        num_workers=num_workers,
+        pin_memory=torch.cuda.is_available(),
+        persistent_workers=(num_workers > 0)
+    )
+    
+    print(f"✅ Loaded {split} data: {len(dataset)} chunks, Phase {phase}")
+    return loader
+
+
+# ===============================================================================
 # MUSDB18 STEM LOADING (for preprocessing)
 # ===============================================================================
 def load_musdb_stems(track_folder, sr=22050):
@@ -1232,6 +1771,51 @@ def process_stage2() -> None:
                 np.save(mix_dir / f"{track_folder.name}_chunk{i}.npy", mix_chunk)
                 np.save(tgt_dir / f"{track_folder.name}_chunk{i}.npy", tgt_chunk)
         print(f"✅ {split} complete: {len(list(mix_dir.glob('*.npy')))} chunks")
+
+
+# Vocals Only: Clean vocal stems for Linearizer (voice conversion)
+def process_vocals_for_linearizer() -> None:
+    """
+    Extracts clean vocal stems from MUSDB18 for Linearizer training.
+    Organizes by singer (track name) for Phase 1 (identity) and Phase 2 (style transfer).
+    
+    Output structure:
+        data/vocals/train/*.npy  (chunks named: SingerName_chunk0.npy, etc.)
+        data/vocals/val/*.npy
+        data/vocals/test/*.npy
+    
+    Each chunk is named with the singer/track name for easy pairing in Phase 2.
+    """
+    print(f"\n{'='*70}\nVOCALS PREPROCESSING: Clean vocal stems for Linearizer\n{'='*70}")
+    
+    for split, folder in MUSDB_SPLITS.items():
+        out_dir = DATA_DIR / 'vocals' / split
+        
+        # Check if already processed
+        if out_dir.exists() and any(out_dir.glob('*.npy')):
+            print(f"⏭️  {split}: already exists, skipping...")
+            continue
+        
+        print(f"Processing {split} ({folder})...")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        
+        for track_folder in folder.iterdir():
+            # Load only vocals
+            stems = load_musdb_stems(track_folder, sr=SAMPLE_RATE)
+            vocals = stems['vocals']
+            
+            # Chunking
+            step = int((CHUNK_DURATION - CHUNK_OVERLAP) * SAMPLE_RATE)
+            chunk_len = int(CHUNK_DURATION * SAMPLE_RATE)
+            
+            for i, start in enumerate(range(0, len(vocals) - chunk_len + 1, step)):
+                vocal_chunk = vocals[start:start+chunk_len]
+                # Save with singer name for easy organization
+                np.save(out_dir / f"{track_folder.name}_chunk{i}.npy", vocal_chunk)
+        
+        num_chunks = len(list(out_dir.glob('*.npy')))
+        num_singers = len(set(f.stem.split('_chunk')[0] for f in out_dir.glob('*.npy')))
+        print(f"✅ {split} complete: {num_chunks} chunks from {num_singers} singers")
 
 
 # ===============================================================================

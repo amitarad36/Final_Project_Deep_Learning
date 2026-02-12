@@ -1,15 +1,18 @@
 """
-Model A: Spectrogram-Based Music Source Separation Models
+Models
+Here we define the architectures for our source separation models, including:
+- Model A: U-Net (2D Convolutional Architecture)
+- Model A: LSTM-Based Masking (Sequential Architecture)
+- Neural Linearizer: Invertible Source Separation Architecture
 
-Two architectures for comparison:
-- Model A (U-Net): 2D CNN encoder-decoder with skip connections
-- Model A (LSTM): Sequential LSTM-based masking (paper's approach)
+and several configuration functions to easily instantiate these models with predefined settings.
 
 Authors: Amit & Alon
 Date: January 2026
 """
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import numpy as np
 
 
@@ -304,6 +307,119 @@ class CompactLSTMMasking(nn.Module):
 
 
 # =============================================================================
+# NEURAL LINEARIZER: Invertible Source Separation Architecture
+# =============================================================================
+
+class InvertibleBlock(nn.Module):
+    """
+    One block of the Invertible Encoder (g).
+    Uses Affine Coupling to ensure x -> z is perfectly reversible.
+    """
+    def __init__(self, channels=4):
+        super().__init__()
+        self.split_len = channels // 2
+        
+        # Condition network (CNN) - predicts Scale (s) and Shift (t)
+        # This part does NOT need to be invertible.
+        self.cnn = nn.Sequential(
+            nn.Conv2d(self.split_len, 64, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(64, 64, kernel_size=1),
+            nn.ReLU(),
+            nn.Conv2d(64, self.split_len * 2, kernel_size=3, padding=1)
+        )
+        
+        # Learnable 1x1 Convolution for mixing channels
+        self.mix = nn.Conv2d(channels, channels, kernel_size=1, bias=False)
+        # Initialize close to Identity for stability
+        self.mix.weight.data = torch.eye(channels).unsqueeze(2).unsqueeze(3) + 0.01 * torch.randn_like(self.mix.weight.data)
+
+    def forward(self, x, reverse=False):
+        if not reverse:
+            # --- Forward (Encode) ---
+            x = self.mix(x)                     # 1. Mix channels
+            x1, x2 = x.chunk(2, dim=1)          # 2. Split
+            
+            st = self.cnn(x1)                   # 3. Predict s, t
+            s, t = st.chunk(2, dim=1)
+            s = torch.tanh(s)                   # Stability clamp
+            
+            y2 = x2 * torch.exp(s) + t          # 4. Affine Transform
+            y1 = x1
+            return torch.cat([y1, y2], dim=1)
+            
+        else:
+            # --- Inverse (Decode) ---
+            x1, x2 = x.chunk(2, dim=1)
+            
+            st = self.cnn(x1)                   # Predict s, t from x1 (same as forward!)
+            s, t = st.chunk(2, dim=1)
+            s = torch.tanh(s)
+            
+            y2 = (x2 - t) * torch.exp(-s)       # Inverse Affine
+            y1 = x1
+            y = torch.cat([y1, y2], dim=1)
+            
+            # Inverse 1x1 Conv
+            inv_weight = torch.inverse(self.mix.weight.squeeze()).unsqueeze(2).unsqueeze(3)
+            return F.conv2d(y, inv_weight)
+
+
+class HyperNetwork(nn.Module):
+    """
+    Takes a Style Vector (w) and outputs the Matrix (A).
+    """
+    def __init__(self, input_dim=768, matrix_dim=4): # 768 for WavLM Base
+        super().__init__()
+        self.matrix_dim = matrix_dim
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, 256),
+            nn.ReLU(),
+            nn.Linear(256, 256),
+            nn.ReLU(),
+            nn.Linear(256, matrix_dim * matrix_dim) # Output flattened matrix
+        )
+
+    def forward(self, style_vector):
+        # Output shape: (Batch, 4, 4, 1, 1) for use in conv2d
+        matrix_params = self.net(style_vector)
+        return matrix_params.view(-1, self.matrix_dim, self.matrix_dim, 1, 1)
+
+
+class NeuralLinearizer(nn.Module):
+    """
+    The Main Model wrapper.
+    Updated to return the Matrix A for monitoring.
+    """
+    def __init__(self, num_blocks=6, input_dim=768):
+        super().__init__()
+        self.blocks = nn.ModuleList([InvertibleBlock(channels=4) for _ in range(num_blocks)])
+        self.hypernet = HyperNetwork(input_dim=input_dim)
+
+    def forward(self, x, style_vector):
+        # 1. Encode (g)
+        z = x
+        for block in self.blocks:
+            z = block(z, reverse=False)
+            
+        # 2. Predict Matrix A
+        A = self.hypernet(style_vector) # Shape: (B, 4, 4, 1, 1)
+        
+        # 3. Apply Linear Transform (A * z)
+        # Squeeze A for einsum: (B, 4, 4, 1, 1) -> (B, 4, 4)
+        A_matrix = A.squeeze(-1).squeeze(-1)
+        z_transformed = torch.einsum('bci,bihw->bchw', A_matrix, z)
+        
+        # 4. Decode (g inverse)
+        out = z_transformed
+        for block in reversed(self.blocks):
+            out = block(out, reverse=True)
+            
+        # RETURN BOTH OUTPUT AND MATRIX A
+        return out, A_matrix
+
+
+# =============================================================================
 # CONFIGURATION FUNCTIONS
 # =============================================================================
 
@@ -333,4 +449,17 @@ def get_lstm_config():
         'num_layers': 2,
         'dropout': 0.3,
         'bidirectional': True
+    }
+    
+def get_linearizer_config():
+    """
+    Returns configuration for the Neural Linearizer.
+    """
+    return {
+        'input_dim': 768,       # WavLM Base dim
+        'num_blocks': 6,        # Depth of Encoder/Decoder
+        'lr': 1e-4,             # Learning Rate
+        'batch_size': 16,       # Keep small to fit in VRAM (spectrograms are big!)
+        'num_epochs': 50,       # Epochs for Identity Phase
+        'chunk_duration': 4.0   # Shorter chunks for Linearizer (saves VRAM)
     }
