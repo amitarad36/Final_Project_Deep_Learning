@@ -74,21 +74,20 @@ class StyleEncoderWrapper(nn.Module):
         Input: Audio waveform (Batch, Time) at 22050Hz
         Output: Style Vector (Batch, 768)
         """
-        # 1. Resample to 16k
+        # 1. Resample to 16k (Gradients Preserved)
         audio_16k = self.resampler(audio_waveform)
         
-        # 2. Extract Features
-        # Move to CPU for feature_extractor (numpy based usually), then back to GPU
-        inputs = self.feature_extractor(
-            [a.cpu().numpy() for a in audio_16k], 
-            sampling_rate=16000, 
-            return_tensors="pt", 
-            padding=True
-        ).to(self.device)
+        # 2. Manual Normalization (PyTorch Native)
+        # WavLM expects zero mean and unit variance per sample
+        # We do this manually so we don't have to leave the GPU or detach
+        mean = audio_16k.mean(dim=-1, keepdim=True)
+        var = audio_16k.var(dim=-1, keepdim=True)
+        audio_norm = (audio_16k - mean) / torch.sqrt(var + 1e-5)
         
-        # 3. Run Model
+        # 3. Run Model Directly (Skip feature_extractor wrapper)
+        # We feed 'input_values' directly.
         with torch.no_grad():
-            outputs = self.model(**inputs)
+            outputs = self.model(input_values=audio_norm)
             # Mean pooling over time to get one vector per song
             style_emb = outputs.last_hidden_state.mean(dim=1)
             
@@ -114,27 +113,21 @@ class ContentEncoderWrapper(nn.Module):
         Input: Audio waveform (Batch, Time) at 22050Hz
         Output: Content Features (Batch, Time_frames, 768)
         """
-        # 1. Resample to 16k
+        # 1. Resample to 16k (Gradients Preserved)
         audio_16k = self.resampler(audio_waveform)
         
-        # 2. Extract Features
-        inputs = self.feature_extractor(
-            [a.cpu().numpy() for a in audio_16k],
-            sampling_rate=16000,
-            return_tensors="pt",
-            padding=True
-        ).to(self.device)
+        # 2. Manual Normalization (PyTorch Native)
+        # Wav2Vec2 expects zero mean and unit variance per sample
+        # We do this manually so we don't have to leave the GPU or detach
+        mean = audio_16k.mean(dim=-1, keepdim=True)
+        var = audio_16k.var(dim=-1, keepdim=True)
+        audio_norm = (audio_16k - mean) / torch.sqrt(var + 1e-5)
         
-        # 3. Run Model (Keep gradients if in training mode)
-        if self.training:
-            outputs = self.model(**inputs)
-            content_feat = outputs.last_hidden_state
-        else:
-            with torch.no_grad():
-                outputs = self.model(**inputs)
-                content_feat = outputs.last_hidden_state
+        # 3. Run Model Directly (Skip feature_extractor wrapper)
+        # We feed 'input_values' directly.
+        outputs = self.model(input_values=audio_norm)
         
-        return content_feat
+        return outputs.last_hidden_state
 
 # ==============================================================================
 # Universal Trainer
