@@ -453,13 +453,10 @@ def get_lstm_config():
     
 def get_linearizer_config():
     """
-    Returns configuration for the Neural Linearizer.
+    Returns architecture configuration for the Neural Linearizer.
+    Training hyperparameters are in utils.get_linearizer_training_config().
     """
     return {
-        'input_dim': 768,       # WavLM Base dim
-        'num_blocks': 6,        # Depth of Encoder/Decoder
-        'lr': 1e-4,             # Learning Rate
-        'batch_size': 16,       # Keep small to fit in VRAM (spectrograms are big!)
-        'num_epochs': 50,       # Epochs for Identity Phase
-        'chunk_duration': 4.0   # Shorter chunks for Linearizer (saves VRAM)
+        'input_dim': 768,       # WavLM Base embedding dimension
+        'num_blocks': 6         # Depth of invertible encoder/decoder
     }

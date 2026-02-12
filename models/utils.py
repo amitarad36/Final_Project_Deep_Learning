@@ -433,6 +433,19 @@ class Separator:
 # Linearizer Trainer (Multi-Objective: Reconstruction + Content + Style)
 # ==============================================================================
 
+def get_linearizer_training_config():
+    """
+    Returns training hyperparameters for the Neural Linearizer.
+    Architecture params are in models.get_linearizer_config().
+    """
+    return {
+        'lr': 1e-4,             # Learning rate
+        'batch_size': 16,        # Batch size (keep small for spectrograms)
+        'num_epochs': 5,        # Number of training epochs
+        'chunk_duration': 8.0   # Audio chunk duration in seconds
+    }
+
+
 class LinearizerTrainer:
     """
     Multi-objective trainer for Neural Linearizer.
