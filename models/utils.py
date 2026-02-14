@@ -403,6 +403,8 @@ class Separator:
         """
         Separates sources from mixture using trained model.
         Returns estimated output.
+        
+        FIXED: Applies mask in LINEAR domain to match training pipeline.
         """
         self.model.eval()
         with torch.no_grad():
@@ -410,13 +412,14 @@ class Separator:
             if mix.ndim == 1:
                 mix: torch.Tensor = mix.unsqueeze(0)
             if self.input_type == 'spectrogram':
-                mix, mix_phase = self.processor.to_spectrogram(mix)
-                mix_in = mix.unsqueeze(1)
+                mix_log, mix_phase = self.processor.to_spectrogram(mix)
+                mix_in = mix_log.unsqueeze(1)
                 mask = self.model(mix_in)
                 if mask.shape != mix_in.shape:
                     mask = mask[:, :, :mix_in.shape[2], :mix_in.shape[3]]
-                est_mag = mask.squeeze(1) * mix
-                est = self.processor.to_waveform(est_mag, mix_phase)
+                # FIXED: Apply mask in LINEAR domain (convert log→linear, apply mask, convert back)
+                est_linear = mask.squeeze(1) * torch.expm1(mix_log)
+                est = self.processor.to_waveform(torch.log1p(est_linear), mix_phase)
                 return est.squeeze().cpu().numpy()
             else:
                 est = self.model(mix)
