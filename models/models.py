@@ -112,6 +112,131 @@ class TimeFrequencyDomainUNet(nn.Module):
 
 
 # =============================================================================
+# ATTENTION-BASED U-NET: U-Net with Self-Attention at Bottleneck
+# =============================================================================
+
+class MultiHeadSelfAttention2D(nn.Module):
+    """
+    Applies Multi-Head Self-Attention to 2D feature maps.
+    Input: (Batch, Channels, Height, Width)
+    Output: (Batch, Channels, Height, Width)
+    """
+    def __init__(self, in_channels, num_heads=4, dropout=0.1):
+        super().__init__()
+        self.num_heads = num_heads
+        self.head_dim = in_channels // num_heads
+        self.scale = self.head_dim ** -0.5
+
+        assert in_channels % num_heads == 0, "Channels must be divisible by num_heads"
+
+        # Projections for Q, K, V
+        self.qkv = nn.Linear(in_channels, in_channels * 3)
+        self.proj = nn.Linear(in_channels, in_channels)
+        self.norm = nn.GroupNorm(1, in_channels)  # LayerNorm equivalent for 2D inputs
+        self.dropout = nn.Dropout(dropout)
+
+    def forward(self, x):
+        b, c, h, w = x.shape
+        
+        # 1. Flatten spatial dimensions: (B, C, H, W) -> (B, C, H*W) -> (B, H*W, C)
+        # This treats every pixel (Freq, Time) as a token in the sequence.
+        flattened = x.view(b, c, -1).permute(0, 2, 1)  # (Batch, Seq_Len, Channels)
+        
+        # 2. Compute Q, K, V
+        # Shape: (B, Seq_Len, 3 * C)
+        qkv = self.qkv(flattened)
+        # Reshape to (B, Seq_Len, 3, Num_Heads, Head_Dim) -> (3, B, Heads, Seq_Len, Dim)
+        qkv = qkv.reshape(b, h * w, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
+        q, k, v = qkv[0], qkv[1], qkv[2]
+
+        # 3. Scaled Dot-Product Attention
+        # (B, Heads, Seq_Len, Dim) @ (B, Heads, Dim, Seq_Len) -> (B, Heads, Seq_Len, Seq_Len)
+        attn = (q @ k.transpose(-2, -1)) * self.scale
+        attn = attn.softmax(dim=-1)
+        attn = self.dropout(attn)
+
+        # 4. Combine Heads
+        # (B, Heads, Seq_Len, Seq_Len) @ (B, Heads, Seq_Len, Dim) -> (B, Heads, Seq_Len, Dim)
+        out = (attn @ v).transpose(1, 2).reshape(b, h * w, c)
+        
+        # 5. Output Projection
+        out = self.proj(out)
+        out = self.dropout(out)
+
+        # 6. Reshape back to 2D feature map
+        out = out.permute(0, 2, 1).view(b, c, h, w)
+        
+        # 7. Residual Connection + Norm
+        return self.norm(x + out)
+
+
+class UNetAttention(nn.Module):
+    """
+    U-Net with Self-Attention at the bottleneck.
+    Improves feature representation by allowing the model to focus on important patterns.
+    """
+    def __init__(self, in_channels=1, out_channels=1, base_filters=32, num_layers=4, num_heads=4, batchnorm=True, dropout=0.1):
+        super().__init__()
+        self.num_layers = num_layers
+        self.encoders = nn.ModuleList()
+        self.decoders = nn.ModuleList()
+
+        # --- Encoder Path ---
+        for i in range(num_layers):
+            inc = in_channels if i == 0 else base_filters * (2 ** (i - 1))
+            outc = base_filters * (2 ** i)
+            self.encoders.append(EncoderBlock(inc, outc, batchnorm=batchnorm, dropout=dropout))
+
+        # --- Bottleneck ---
+        bot_in = base_filters * (2 ** (num_layers - 1))
+        bot_out = base_filters * (2 ** num_layers)
+        
+        # 1. Standard Conv Bottleneck
+        self.bottleneck_conv = ConvLayer2D(bot_in, bot_out, kernel_size=3, stride=1, padding=1, batchnorm=batchnorm, dropout=dropout)
+        
+        # 2. Attention Mechanism
+        # We apply attention to the bottleneck features to improve feature representation
+        self.bottleneck_attn = MultiHeadSelfAttention2D(bot_out, num_heads=num_heads, dropout=dropout)
+
+        # --- Decoder Path ---
+        for i in range(num_layers - 1, -1, -1):
+            dec_in = bot_out if i == num_layers - 1 else base_filters * (2 ** (i + 1))
+            dec_out = base_filters * (2 ** i)
+            self.decoders.append(DecoderBlock(dec_in, dec_out, batchnorm=batchnorm, dropout=dropout))
+
+        self.final_conv = nn.Conv2d(base_filters, out_channels, 1)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        _, _, h, w = x.shape
+        
+        # Padding (Same as standard U-Net)
+        multiple = 2 ** self.num_layers
+        pad_h = int((multiple - (h % multiple)) % multiple)
+        pad_w = int((multiple - (w % multiple)) % multiple)
+        if pad_h > 0 or pad_w > 0:
+            x = F.pad(x, (0, pad_w, 0, pad_h), mode="constant", value=0.0)
+
+        # Encoder
+        skips = []
+        for enc in self.encoders:
+            x, p = enc(x)
+            skips.append(x)
+            x = p
+
+        # Bottleneck (Conv -> Attention)
+        x = self.bottleneck_conv(x)
+        x = self.bottleneck_attn(x)  # <--- Attention mechanism applied
+
+        # Decoder
+        for dec, skip in zip(self.decoders, reversed(skips)):
+            x = dec(x, skip)
+
+        x = self.sigmoid(self.final_conv(x))
+        return x[:, :, :h, :w]
+
+
+# =============================================================================
 # MODEL A (LSTM): Sequential LSTM-Based Masking
 # =============================================================================
 
@@ -433,6 +558,22 @@ def get_unet_config():
         'out_channels': 1,
         'base_filters': 48,
         'num_layers': 4,
+        'batchnorm': True,
+        'dropout': 0.1
+    }
+
+
+def get_unet_attention_config():
+    """
+    Returns configuration for U-Net with Attention (UNetAttention).
+    """
+    return {
+        'model_type': 'unet_attention',
+        'in_channels': 1,
+        'out_channels': 1,
+        'base_filters': 48,
+        'num_layers': 4,
+        'num_heads': 4,
         'batchnorm': True,
         'dropout': 0.1
     }
