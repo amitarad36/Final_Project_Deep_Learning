@@ -2038,20 +2038,18 @@ class VocalsDatasetPhase2(Dataset):
         }
 
 
-def precompute_style_embeddings_from_musdb(musdb_dir, cache_dir, style_encoder, device="cuda"):
+def precompute_style_embeddings_from_musdb(musdb_dir, cache_dir, style_encoder, device="cuda", max_chunk_seconds=30):
     """
     Pre-compute WavLM style embeddings using MUSDB18 full vocals (instead of chunked data).
     
-    This is much cleaner than concatenating chunks:
-    - Full vocals from MUSDB18 (1-5 min of continuous audio)
-    - One WavLM pass per song
-    - Save embeddings as .pt files in data/style_embeddings/
+    To avoid OOM on T4 GPU, processes long audio in chunks and averages embeddings.
     
     Args:
         musdb_dir: Path to MUSDB18 directory (train/valid/test)
         cache_dir: Directory to save embeddings (e.g., data/style_embeddings/train)
         style_encoder: StyleEncoderWrapper (WavLM model)
         device: Device to use
+        max_chunk_seconds: Maximum chunk length in seconds (default: 30s to avoid OOM)
     """
     from tqdm import tqdm
     import librosa
@@ -2068,6 +2066,8 @@ def precompute_style_embeddings_from_musdb(musdb_dir, cache_dir, style_encoder, 
     
     pbar = tqdm(all_song_dirs, desc="Pre-computing WavLM embeddings from MUSDB18")
     
+    max_chunk_samples = int(max_chunk_seconds * 22050)  # e.g., 30s * 22050 = 661,500 samples
+    
     with torch.no_grad():
         for song_dir in pbar:
             vocals_file = song_dir / "vocals.wav"
@@ -2077,15 +2077,36 @@ def precompute_style_embeddings_from_musdb(musdb_dir, cache_dir, style_encoder, 
             
             # Load full vocals (handles variable lengths)
             vocals_wav, sr = librosa.load(str(vocals_file), sr=22050, mono=True)
-            vocals_tensor = torch.tensor(vocals_wav, dtype=torch.float32).unsqueeze(0).to(device)
             
-            # Compute WavLM embedding
-            style_embedding = style_encoder.get_style(vocals_tensor)  # (1, 768)
+            # Split into chunks to avoid OOM (process max 30s at a time)
+            num_samples = len(vocals_wav)
+            embeddings = []
+            
+            for start_idx in range(0, num_samples, max_chunk_samples):
+                end_idx = min(start_idx + max_chunk_samples, num_samples)
+                chunk = vocals_wav[start_idx:end_idx]
+                
+                # Convert to tensor and move to device
+                chunk_tensor = torch.tensor(chunk, dtype=torch.float32).unsqueeze(0).to(device)
+                
+                # Compute WavLM embedding for this chunk
+                chunk_embedding = style_encoder.get_style(chunk_tensor)  # (1, 768)
+                embeddings.append(chunk_embedding.cpu())
+                
+                # Free GPU memory
+                del chunk_tensor, chunk_embedding
+            
+            # Average all chunk embeddings to get final style embedding
+            style_embedding = torch.stack(embeddings).mean(dim=0)  # (1, 768)
             
             # Save to cache directory with song name as filename
             song_name = song_dir.name  # e.g., "A Classic Education - NightOwl"
             cache_file = cache_dir / f"{song_name}.pt"
-            torch.save(style_embedding.cpu(), cache_file)
+            torch.save(style_embedding, cache_file)
+            
+            # Clear CUDA cache between songs
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
             
             pbar.update(1)
     
