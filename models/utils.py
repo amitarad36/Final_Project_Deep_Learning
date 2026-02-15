@@ -686,6 +686,359 @@ class LinearizerTrainer:
                 
         return self.history
 
+
+# ==============================================================================
+# Flow-Based Linearizer Trainer (UNet velocity in latent + integration)
+# ==============================================================================
+class FlowLinearizerTrainer:
+    """
+    Trainer for Flow-based linearization models (LinearizerFlow).
+    
+    Uses unpaired data with frozen WavLM + HuBERT encoders to extract:
+      - Style: WavLM embeddings (speaker/singer characteristics)
+      - Content: HuBERT features (lyrics, melody, timing)
+    
+    The model learns a velocity field in squeezed spectrogram space,
+    integrated via ODE solvers to convert content spectrograms to target style.
+    """
+    
+    def __init__(
+        self,
+        model,                 # models.LinearizerFlow
+        processor,             # utils.AudioProcessor
+        style_encoder,         # StyleEncoderWrapper (frozen)
+        content_encoder,       # ContentEncoderWrapper (frozen)
+        train_loader,
+        val_loader,
+        optimizer,
+        device="cuda",
+        lambda_content=1.0,
+        lambda_style=1.0,
+        lambda_id=0.1,         # identity/reconstruction weight
+        p_identity=0.2,        # fraction of batches forced to use style=content
+        steps=20,
+        solver="euler",
+    ):
+        """
+        Initialize the Flow Linearizer Trainer.
+        
+        Args:
+            model: LinearizerFlow model instance
+            processor: AudioProcessor for STFT/iSTFT
+            style_encoder: Frozen StyleEncoderWrapper (WavLM)
+            content_encoder: Frozen ContentEncoderWrapper (HuBERT)
+            train_loader: DataLoader for training (UnpairedVocalChunksDataset)
+            val_loader: DataLoader for validation
+            optimizer: torch.optim optimizer
+            device: 'cuda' or 'cpu'
+            lambda_content: Weight for content loss
+            lambda_style: Weight for style loss
+            lambda_id: Weight for identity/reconstruction loss
+            p_identity: Probability of forcing style=content each batch
+            steps: Number of ODE integration steps
+            solver: ODE solver ('euler', 'rk4', etc.)
+        """
+        self.model = model.to(device)
+        self.processor = processor
+        self.style_encoder = style_encoder.to(device)
+        self.content_encoder = content_encoder.to(device)
+
+        self.train_loader = train_loader
+        self.val_loader = val_loader
+        self.optimizer = optimizer
+        self.device = device
+
+        self.lambda_content = lambda_content
+        self.lambda_style = lambda_style
+        self.lambda_id = lambda_id
+        self.p_identity = p_identity
+
+        self.steps = steps
+        self.solver = solver
+
+        # Loss functions
+        self.l1 = nn.L1Loss()
+        self.mse = nn.MSELoss()
+        self.cos = nn.CosineEmbeddingLoss()
+
+        # Training history
+        self.history = {"train_total": [], "val_total": []}
+
+        # Freeze encoders (they provide ground truth features, don't train)
+        self.style_encoder.eval()
+        self.content_encoder.eval()
+        for p in self.style_encoder.parameters():
+            p.requires_grad = False
+        for p in self.content_encoder.parameters():
+            p.requires_grad = False
+
+    def _make_cond(self, style_wav, content_wav):
+        """
+        Extract conditioning vectors from audio waveforms.
+        
+        Args:
+            style_wav: (B, time) - reference waveform for style
+            content_wav: (B, time) - reference waveform for content/lyrics
+        
+        Returns:
+            cond: (B, 1536) - concatenated style+content representation
+            style_vec: (B, 768) - WavLM style embedding
+            content_feat: (B, T', 768) - HuBERT time-series features
+        """
+        # Extract style: WavLM -> (B, 768)
+        style_vec = self.style_encoder.get_style(style_wav)
+
+        # Extract content: HuBERT -> (B, T', 768), pool to (B, 768)
+        content_feat = self.content_encoder.get_content(content_wav)
+        content_vec = content_feat.mean(dim=1)  # Pool over time
+
+        # Concatenate for conditioning: (B, 1536)
+        cond = torch.cat([style_vec, content_vec], dim=1)
+        
+        return cond, style_vec, content_feat
+
+    def _forward_once(self, content_wav, style_wav):
+        """
+        Single forward pass: content STFT -> flow -> target spectrogram.
+        
+        Args:
+            content_wav: (B, time) - waveform carrying lyrical content
+            style_wav: (B, time) - waveform carrying target style/speaker
+        
+        Returns:
+            Dictionary with:
+              - xhat_log: output log-magnitude spectrogram
+              - x_log: input log-magnitude (for reconstruction loss)
+              - xhat_wav: reconstructed waveform (gradients preserved)
+              - style_vec: target style embedding
+              - content_feat: content features for loss computation
+        """
+        # (1) Content waveform -> STFT (log-magnitude + phase)
+        x_log, x_phase = self.processor.to_spectrogram(content_wav)  # log1p magnitude
+        if x_log.dim() == 3:
+            x_log = x_log.unsqueeze(1)    # (B, F, T) -> (B, 1, F, T)
+            x_phase = x_phase.unsqueeze(1)
+
+        # (2) Extract conditioning from waveforms
+        cond, style_vec, content_feat = self._make_cond(style_wav, content_wav)
+
+        # (3) Run flow model in squeezed latent space
+        x_sq = squeeze(x_log)              # (B, 1, F, T) -> (B, 4, F/2, T/2)
+        xhat_sq = self.model(x_sq, cond=cond, steps=self.steps, solver=self.solver)
+        xhat_log = unsqueeze(xhat_sq)      # (B, 4, ...) -> (B, 1, F, T)
+
+        # (4) Crop phase/log to match output shape (squeeze may trim odd dimensions)
+        x_log_c = x_log[:, :, :xhat_log.shape[2], :xhat_log.shape[3]]
+        x_phase_c = x_phase[:, :, :xhat_log.shape[2], :xhat_log.shape[3]]
+
+        # (5) Inverse STFT (keep gradients for backprop)
+        xhat_wav = logmag_to_waveform_with_gradients(self.processor, xhat_log, x_phase_c)
+
+        return {
+            "xhat_log": xhat_log,
+            "x_log": x_log_c,
+            "xhat_wav": xhat_wav,
+            "style_vec": style_vec,
+            "content_feat": content_feat,
+        }
+
+    def train_epoch(self, epoch_idx, num_epochs):
+        """
+        Train for one epoch.
+        
+        Args:
+            epoch_idx: Current epoch (1-indexed)
+            num_epochs: Total epochs
+        
+        Returns:
+            Average training loss
+        """
+        self.model.train()
+        total = 0.0
+        n = 0
+
+        try:
+            from tqdm.notebook import tqdm
+        except ImportError:
+            from tqdm import tqdm
+
+        pbar = tqdm(self.train_loader, desc=f"Flow Epoch {epoch_idx}/{num_epochs}", leave=True)
+
+        for batch in pbar:
+            content_wav = batch["content_wav"].to(self.device)
+            
+            # Check if we have pre-computed embeddings or raw style waveforms
+            if "style_embedding" in batch:
+                # Pre-computed WavLM embeddings (NEW: much faster!)
+                style_vec = batch["style_embedding"].to(self.device)
+                
+                # Extract content features
+                content_feat = self.content_encoder.get_content(content_wav)
+                content_vec = content_feat.mean(dim=1)
+                
+                # Build conditioning
+                cond = torch.cat([style_vec, content_vec], dim=1)
+                
+            else:
+                # Raw waveforms (OLD: compute embeddings on-the-fly)
+                style_wav = batch["style_wav"].to(self.device)
+                
+                # Occasionally force identity pairs
+                if np.random.rand() < self.p_identity:
+                    style_wav = content_wav
+                
+                # Extract both style and content
+                style_vec = self.style_encoder.get_style(style_wav)
+                content_feat = self.content_encoder.get_content(content_wav)
+                content_vec = content_feat.mean(dim=1)
+                
+                # Build conditioning
+                cond = torch.cat([style_vec, content_vec], dim=1)
+
+            self.optimizer.zero_grad()
+
+            # Forward pass (content_wav -> spectrogram -> flow)
+            x_log, x_phase = self.processor.to_spectrogram(content_wav)
+            if x_log.dim() == 3:
+                x_log = x_log.unsqueeze(1)
+                x_phase = x_phase.unsqueeze(1)
+            
+            x_sq = squeeze(x_log)
+            xhat_sq = self.model(x_sq, cond=cond, steps=self.steps, solver=self.solver)
+            xhat_log = unsqueeze(xhat_sq)
+            
+            x_log_c = x_log[:, :, :xhat_log.shape[2], :xhat_log.shape[3]]
+            x_phase_c = x_phase[:, :, :xhat_log.shape[2], :xhat_log.shape[3]]
+            
+            xhat_wav = logmag_to_waveform_with_gradients(self.processor, xhat_log, x_phase_c)
+
+            # --- Loss Computation ---
+            
+            # Content Loss
+            pred_content = self.content_encoder.get_content(xhat_wav)
+            min_len = min(pred_content.size(1), content_feat.size(1))
+            Lc = self.l1(pred_content[:, :min_len, :], content_feat[:, :min_len, :])
+
+            # Style Loss (using pre-computed or extracted embedding)
+            pred_style = self.style_encoder.get_style(xhat_wav)
+            ones = torch.ones(pred_style.size(0), device=self.device)
+            Ls = self.cos(pred_style, style_vec, ones)
+
+            # Identity Loss
+            Lid = self.mse(xhat_log, x_log_c)
+
+            # Total loss
+            loss = self.lambda_content * Lc + self.lambda_style * Ls + self.lambda_id * Lid
+            
+            loss.backward()
+            self.optimizer.step()
+
+            total += loss.item()
+            n += 1
+            
+            if n % 10 == 0:
+                pbar.set_postfix({
+                    "loss": f"{total/n:.4f}",
+                    "Lc": f"{Lc.item():.3f}",
+                    "Ls": f"{Ls.item():.3f}"
+                })
+
+        return total / max(1, n)
+
+    @torch.no_grad()
+    def validate(self):
+        """
+        Validation loop (no gradients).
+        
+        Returns:
+            Average validation loss
+        """
+        self.model.eval()
+        total = 0.0
+        n = 0
+        
+        for batch in self.val_loader:
+            content_wav = batch["content_wav"].to(self.device)
+            
+            # Check if we have pre-computed embeddings or raw style waveforms
+            if "style_embedding" in batch:
+                # Pre-computed WavLM embeddings
+                style_vec = batch["style_embedding"].to(self.device)
+                content_feat = self.content_encoder.get_content(content_wav)
+                content_vec = content_feat.mean(dim=1)
+                cond = torch.cat([style_vec, content_vec], dim=1)
+            else:
+                # Raw waveforms
+                style_wav = batch["style_wav"].to(self.device)
+                style_vec = self.style_encoder.get_style(style_wav)
+                content_feat = self.content_encoder.get_content(content_wav)
+                content_vec = content_feat.mean(dim=1)
+                cond = torch.cat([style_vec, content_vec], dim=1)
+
+            # Forward pass
+            x_log, x_phase = self.processor.to_spectrogram(content_wav)
+            if x_log.dim() == 3:
+                x_log = x_log.unsqueeze(1)
+                x_phase = x_phase.unsqueeze(1)
+            
+            x_sq = squeeze(x_log)
+            xhat_sq = self.model(x_sq, cond=cond, steps=self.steps, solver=self.solver)
+            xhat_log = unsqueeze(xhat_sq)
+            
+            x_log_c = x_log[:, :, :xhat_log.shape[2], :xhat_log.shape[3]]
+            x_phase_c = x_phase[:, :, :xhat_log.shape[2], :xhat_log.shape[3]]
+            
+            xhat_wav = logmag_to_waveform_with_gradients(self.processor, xhat_log, x_phase_c)
+
+            # Content loss
+            pred_content = self.content_encoder.get_content(xhat_wav)
+            min_len = min(pred_content.size(1), content_feat.size(1))
+            Lc = self.l1(pred_content[:, :min_len, :], content_feat[:, :min_len, :])
+
+            # Style loss
+            pred_style = self.style_encoder.get_style(xhat_wav)
+            ones = torch.ones(pred_style.size(0), device=self.device)
+            Ls = self.cos(pred_style, style_vec, ones)
+
+            # Identity loss
+            Lid = self.mse(xhat_log, x_log_c)
+
+            loss = self.lambda_content * Lc + self.lambda_style * Ls + self.lambda_id * Lid
+            total += loss.item()
+            n += 1
+
+        return total / max(1, n)
+
+    def train(self, num_epochs, save_path=None):
+        """
+        Full training loop for multiple epochs.
+        
+        Args:
+            num_epochs: Number of epochs to train
+            save_path: Optional path to save best model checkpoint
+        
+        Returns:
+            Training history dictionary
+        """
+        for ep in range(1, num_epochs + 1):
+            tr = self.train_epoch(ep, num_epochs)
+            va = self.validate()
+            
+            self.history["train_total"].append(tr)
+            self.history["val_total"].append(va)
+            
+            print(f"🔄 Epoch {ep}: train={tr:.5f} | val={va:.5f}")
+
+            # Save checkpoint
+            if save_path is not None:
+                torch.save({
+                    "model_state_dict": self.model.state_dict(),
+                    "history": self.history
+                }, save_path)
+
+        return self.history
+
+
 # ==============================================================================
 # Metrics Calculation (use this in notebooks!!!)
 # ==============================================================================
@@ -779,6 +1132,53 @@ class AudioProcessor:
             window=self.window
         )
         return waveform.cpu().numpy()
+
+# ==============================================================================
+# Log-Magnitude to Waveform (Gradient-Preserving)
+# ==============================================================================
+def logmag_to_waveform_with_gradients(processor, log_mag, phase):
+    """
+    Converts log-magnitude and phase spectrograms back to waveform.
+    Preserves gradients for backpropagation (unlike AudioProcessor.to_waveform).
+    
+    This function is designed for use in model forward passes where you need
+    gradient flow through the inverse STFT operation.
+    
+    Args:
+        processor: AudioProcessor instance (for n_fft, hop_length, window)
+        log_mag: Log-magnitude spectrogram, shape (B, 1, F, T) or (B, F, T)
+        phase: Phase spectrogram, shape (B, 1, F, T) or (B, F, T)
+    
+    Returns:
+        waveform: Tensor of shape (B, time) with gradients enabled
+    """
+    # Remove channel dimension if present (squeezed from 4D to 3D)
+    if log_mag.dim() == 4:
+        log_mag = log_mag.squeeze(1)
+    if phase.dim() == 4:
+        phase = phase.squeeze(1)
+
+    # Handle frequency dimension mismatch
+    # If squeeze() was applied during preprocessing, freq bins may be 1024 instead of 1025
+    if log_mag.shape[1] == 1024:
+        log_mag = torch.nn.functional.pad(log_mag, (0, 0, 0, 1), value=0.0)
+        phase   = torch.nn.functional.pad(phase,   (0, 0, 0, 1), value=0.0)
+
+    # Reconstruct magnitude from log scale
+    mag = torch.expm1(log_mag).clamp_min(0.0)
+    
+    # Create complex spectrogram using polar coordinates
+    complex_spec = torch.polar(mag, phase)
+
+    # Inverse STFT (preserves gradients)
+    wav = torch.istft(
+        complex_spec,
+        n_fft=processor.n_fft,
+        hop_length=processor.hop_length,
+        window=processor.window,
+        return_complex=False,
+    )
+    return wav
 
 # ==============================================================================
 # 2. DATASET
@@ -1635,6 +2035,193 @@ class VocalsDatasetPhase2(Dataset):
             'target': torch.tensor(target_chunk, dtype=torch.float32),
             'input_singer': input_singer,
             'target_singer': target_singer
+        }
+
+
+def precompute_style_embeddings_from_musdb(musdb_dir, cache_dir, style_encoder, device="cuda"):
+    """
+    Pre-compute WavLM style embeddings using MUSDB18 full vocals (instead of chunked data).
+    
+    This is much cleaner than concatenating chunks:
+    - Full vocals from MUSDB18 (1-5 min of continuous audio)
+    - One WavLM pass per song
+    - Save embeddings as .pt files in data/style_embeddings/
+    
+    Args:
+        musdb_dir: Path to MUSDB18 directory (train/valid/test)
+        cache_dir: Directory to save embeddings (e.g., data/style_embeddings/train)
+        style_encoder: StyleEncoderWrapper (WavLM model)
+        device: Device to use
+    """
+    from tqdm import tqdm
+    import librosa
+    
+    musdb_dir = Path(musdb_dir)
+    cache_dir = Path(cache_dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    
+    style_encoder = style_encoder.to(device)
+    style_encoder.eval()
+    
+    # Find all song folders and their vocals.wav files
+    all_song_dirs = sorted([d for d in musdb_dir.iterdir() if d.is_dir()])
+    
+    pbar = tqdm(all_song_dirs, desc="Pre-computing WavLM embeddings from MUSDB18")
+    
+    with torch.no_grad():
+        for song_dir in pbar:
+            vocals_file = song_dir / "vocals.wav"
+            
+            if not vocals_file.exists():
+                continue
+            
+            # Load full vocals (handles variable lengths)
+            vocals_wav, sr = librosa.load(str(vocals_file), sr=22050, mono=True)
+            vocals_tensor = torch.tensor(vocals_wav, dtype=torch.float32).unsqueeze(0).to(device)
+            
+            # Compute WavLM embedding
+            style_embedding = style_encoder.get_style(vocals_tensor)  # (1, 768)
+            
+            # Save to cache directory with song name as filename
+            song_name = song_dir.name  # e.g., "A Classic Education - NightOwl"
+            cache_file = cache_dir / f"{song_name}.pt"
+            torch.save(style_embedding.cpu(), cache_file)
+            
+            pbar.update(1)
+    
+    pbar.close()
+    print(f"✅ Pre-computed {len(all_song_dirs)} embeddings to: {cache_dir}")
+
+
+class UnpairedVocalChunksDataset(Dataset):
+    """
+    Unpaired Dataset for Singer Conversion (Content-Style Separation).
+    
+    Returns:
+      - content_wav: SINGLE chunk (carries lyrics + melody) → HuBERT
+      - style_embedding: PRE-COMPUTED WavLM embedding from full song (cached)
+    
+    Embeddings are pre-computed once before training to avoid redundant computation.
+    
+    Folder structure:
+      root/
+        singer_A/
+          song_name_chunk0.npy
+          song_name_chunk1.npy
+          song_name_style_embedding.pt    ← Pre-computed, loaded instead of computing
+        singer_B/
+          ...
+    
+    Args:
+        root_dir: Path to root directory containing singer subdirectories
+        embedding_cache_dir: Directory containing cached embeddings (e.g., data/style_embeddings/train)
+        enforce_different_singer: If True, content and style come from different singers
+    """
+    def __init__(self, root_dir, embedding_cache_dir, enforce_different_singer=True):
+        self.root_dir = Path(root_dir)
+        self.embedding_cache_dir = Path(embedding_cache_dir)
+        self.enforce_different_singer = enforce_different_singer
+
+        # Find all .npy files (flat directory structure)
+        self.files = sorted(list(self.root_dir.glob("*.npy")))
+        if len(self.files) == 0:
+            raise FileNotFoundError(f"❌ No .npy files found under {self.root_dir}")
+
+        # Filter out embedding files
+        self.files = [f for f in self.files if "_style_embedding" not in f.name]
+        
+        # Extract artist_id and song_name from flat files
+        self.artist_ids = []
+        self.song_names = []
+        
+        for f in self.files:
+            filename = f.stem
+            
+            # Parse: "artist - songname_chunkN"
+            if "_chunk" not in filename or " - " not in filename:
+                continue
+            
+            # Split by last _chunk
+            parts = filename.rsplit("_chunk", 1)
+            if len(parts) != 2:
+                continue
+            
+            song_id_part = parts[0]  # e.g., "artist - songname"
+            try:
+                chunk_id = int(parts[1])
+            except ValueError:
+                continue
+            
+            # Split by " - " to extract artist
+            if " - " not in song_id_part:
+                continue
+            
+            artist, song_name = song_id_part.split(" - ", 1)
+            
+            self.artist_ids.append(artist)
+            self.song_names.append(song_name)
+
+        # Build index: artist -> [song_names]
+        self.by_artist_song = {}
+        for i, (artist, song_name) in enumerate(zip(self.artist_ids, self.song_names)):
+            if artist not in self.by_artist_song:
+                self.by_artist_song[artist] = set()
+            self.by_artist_song[artist].add(song_name)
+        
+        # Convert to dict of lists
+        for artist in self.by_artist_song:
+            self.by_artist_song[artist] = sorted(list(self.by_artist_song[artist]))
+        
+        self.artists = list(self.by_artist_song.keys())
+        self.has_artist_structure = len(self.artists) > 1
+
+        total_songs = sum(len(self.by_artist_song[a]) for a in self.artists)
+        print(f"✅ {len(self.files):5d} chunks | {len(self.artists):3d} artists | {total_songs:3d} total songs")
+
+    def __len__(self):
+        return len(self.files)
+
+    def __getitem__(self, idx):
+        # Load CONTENT: Single 8s chunk
+        content_wav = np.load(self.files[idx]).astype(np.float32)
+        content_wav = torch.tensor(content_wav, dtype=torch.float32)
+        content_artist = self.artist_ids[idx]
+
+        # Select STYLE artist (different from content for unpaired learning)
+        if self.enforce_different_singer and self.has_artist_structure:
+            other_artists = [a for a in self.artists if a != content_artist]
+            if len(other_artists) == 0:
+                style_artist = content_artist
+            else:
+                style_artist = other_artists[np.random.randint(0, len(other_artists))]
+        else:
+            style_artist = self.artists[np.random.randint(0, len(self.artists))]
+
+        # Pick a random song from style_artist
+        available_songs = self.by_artist_song[style_artist]
+        random_song_name = available_songs[np.random.randint(0, len(available_songs))]
+
+        # Load PRE-COMPUTED WavLM embedding from cache directory
+        # Format: cache_dir/Artist - Song.pt
+        full_name = f"{style_artist} - {random_song_name}"
+        embedding_file = self.embedding_cache_dir / f"{full_name}.pt"
+        
+        if embedding_file.exists():
+            style_embedding = torch.load(embedding_file, map_location="cpu")  # (1, 768)
+            style_embedding = style_embedding.squeeze(0)  # (768,)
+        else:
+            raise FileNotFoundError(
+                f"❌ Style embedding not found: {embedding_file}\n"
+                f"   Run precompute_style_embeddings_from_musdb() first!\n"
+                f"   Cache directory: {self.embedding_cache_dir}"
+            )
+
+        return {
+            "content_wav": content_wav,
+            "style_embedding": style_embedding,  # From MUSDB18 full vocals
+            "content_artist": content_artist,
+            "style_artist": style_artist,
+            "style_song_name": random_song_name,
         }
 
 

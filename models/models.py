@@ -432,117 +432,290 @@ class CompactLSTMMasking(nn.Module):
 
 
 # =============================================================================
-# NEURAL LINEARIZER: Invertible Source Separation Architecture
+# LINEARIZER FLOW: invertible g + UNet velocity v_theta(z,t,cond)
 # =============================================================================
+
+class ActNorm(nn.Module):
+    def __init__(self, channels):
+        super().__init__()
+        self.channels = channels
+        self.logs = nn.Parameter(torch.zeros(1, channels, 1, 1))
+        self.bias = nn.Parameter(torch.zeros(1, channels, 1, 1))
+        self.initialized = False
+
+    def forward(self, x, reverse=False):
+        if (not self.initialized) and (x.numel() > 0):
+            with torch.no_grad():
+                flatten = x.permute(1, 0, 2, 3).contiguous().view(x.shape[1], -1)
+                mean = flatten.mean(1).view(1, self.channels, 1, 1)
+                std = flatten.std(1).view(1, self.channels, 1, 1)
+                self.bias.data.copy_(-mean)
+                self.logs.data.copy_(-torch.log(std + 1e-6))
+                self.initialized = True
+
+        if not reverse:
+            return (x + self.bias) * torch.exp(self.logs)
+        else:
+            return x * torch.exp(-self.logs) - self.bias
+
 
 class InvertibleBlock(nn.Module):
     """
-    One block of the Invertible Encoder (g).
-    Uses Affine Coupling to ensure x -> z is perfectly reversible.
+    ActNorm -> 1x1 Conv -> affine coupling
     """
-    def __init__(self, channels=4):
+    def __init__(self, channels=4, hidden=64):
         super().__init__()
+        assert channels % 2 == 0
+        self.channels = channels
         self.split_len = channels // 2
-        
-        # Condition network (CNN) - predicts Scale (s) and Shift (t)
-        # This part does NOT need to be invertible.
-        self.cnn = nn.Sequential(
-            nn.Conv2d(self.split_len, 64, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(64, 64, kernel_size=1),
-            nn.ReLU(),
-            nn.Conv2d(64, self.split_len * 2, kernel_size=3, padding=1)
-        )
-        
-        # Learnable 1x1 Convolution for mixing channels
+
+        self.actnorm = ActNorm(channels)
+
         self.mix = nn.Conv2d(channels, channels, kernel_size=1, bias=False)
-        # Initialize close to Identity for stability
-        self.mix.weight.data = torch.eye(channels).unsqueeze(2).unsqueeze(3) + 0.01 * torch.randn_like(self.mix.weight.data)
+        with torch.no_grad():
+            eye = torch.eye(channels).unsqueeze(2).unsqueeze(3)
+            self.mix.weight.data = eye + 0.01 * torch.randn_like(eye)
+
+        self.nn = nn.Sequential(
+            nn.Conv2d(self.split_len, hidden, 3, padding=1),
+            nn.SiLU(),
+            nn.Conv2d(hidden, hidden, 1),
+            nn.SiLU(),
+            nn.Conv2d(hidden, self.split_len * 2, 3, padding=1)
+        )
 
     def forward(self, x, reverse=False):
         if not reverse:
-            # --- Forward (Encode) ---
-            x = self.mix(x)                     # 1. Mix channels
-            x1, x2 = x.chunk(2, dim=1)          # 2. Split
-            
-            st = self.cnn(x1)                   # 3. Predict s, t
-            s, t = st.chunk(2, dim=1)
-            s = torch.tanh(s)                   # Stability clamp
-            
-            y2 = x2 * torch.exp(s) + t          # 4. Affine Transform
-            y1 = x1
-            return torch.cat([y1, y2], dim=1)
-            
-        else:
-            # --- Inverse (Decode) ---
+            x = self.actnorm(x, reverse=False)
+            x = self.mix(x)
+
             x1, x2 = x.chunk(2, dim=1)
-            
-            st = self.cnn(x1)                   # Predict s, t from x1 (same as forward!)
+            st = self.nn(x1)
             s, t = st.chunk(2, dim=1)
             s = torch.tanh(s)
-            
-            y2 = (x2 - t) * torch.exp(-s)       # Inverse Affine
-            y1 = x1
-            y = torch.cat([y1, y2], dim=1)
-            
-            # Inverse 1x1 Conv
+            y2 = x2 * torch.exp(s) + t
+            y = torch.cat([x1, y2], dim=1)
+            return y
+
+        else:
+            x1, x2 = x.chunk(2, dim=1)
+            st = self.nn(x1)
+            s, t = st.chunk(2, dim=1)
+            s = torch.tanh(s)
+            y2 = (x2 - t) * torch.exp(-s)
+            y = torch.cat([x1, y2], dim=1)
+
             inv_weight = torch.inverse(self.mix.weight.squeeze()).unsqueeze(2).unsqueeze(3)
-            return F.conv2d(y, inv_weight)
+            y = F.conv2d(y, inv_weight)
+            y = self.actnorm(y, reverse=True)
+            return y
 
 
-class HyperNetwork(nn.Module):
+def sinusoidal_t_embedding(t, dim):
     """
-    Takes a Style Vector (w) and outputs the Matrix (A).
+    t: (B,) in [0,1]
+    returns: (B, dim)
     """
-    def __init__(self, input_dim=768, matrix_dim=4): # 768 for WavLM Base
+    half = dim // 2
+    freqs = torch.exp(
+        -np.log(10000.0) * torch.arange(0, half, device=t.device).float() / (half - 1 + 1e-8)
+    )
+    args = t[:, None] * freqs[None, :]
+    emb = torch.cat([torch.sin(args), torch.cos(args)], dim=1)
+    if dim % 2 == 1:
+        emb = torch.cat([emb, torch.zeros_like(emb[:, :1])], dim=1)
+    return emb
+
+
+class FiLMResBlock(nn.Module):
+    """
+    ResBlock with FiLM conditioning from a vector emb (time+style+content).
+    """
+    def __init__(self, in_ch, out_ch, emb_dim):
         super().__init__()
-        self.matrix_dim = matrix_dim
-        self.net = nn.Sequential(
-            nn.Linear(input_dim, 256),
-            nn.ReLU(),
-            nn.Linear(256, 256),
-            nn.ReLU(),
-            nn.Linear(256, matrix_dim * matrix_dim) # Output flattened matrix
+        self.in_ch = in_ch
+        self.out_ch = out_ch
+
+        self.norm1 = nn.GroupNorm(8, in_ch)
+        self.conv1 = nn.Conv2d(in_ch, out_ch, 3, padding=1)
+
+        self.norm2 = nn.GroupNorm(8, out_ch)
+        self.conv2 = nn.Conv2d(out_ch, out_ch, 3, padding=1)
+
+        self.emb_proj = nn.Linear(emb_dim, out_ch * 2)  # gamma, beta
+        self.skip = nn.Conv2d(in_ch, out_ch, 1) if in_ch != out_ch else nn.Identity()
+
+    def forward(self, x, emb):
+        h = self.conv1(F.silu(self.norm1(x)))
+
+        gamma_beta = self.emb_proj(emb)  # (B, 2*out_ch)
+        gamma, beta = gamma_beta.chunk(2, dim=1)
+        gamma = gamma[:, :, None, None]
+        beta = beta[:, :, None, None]
+
+        h = self.norm2(h)
+        h = h * (1.0 + gamma) + beta
+        h = self.conv2(F.silu(h))
+
+        return h + self.skip(x)
+
+
+class Down(nn.Module):
+    def __init__(self, ch):
+        super().__init__()
+        self.op = nn.Conv2d(ch, ch, 4, stride=2, padding=1)
+
+    def forward(self, x):
+        return self.op(x)
+
+
+class Up(nn.Module):
+    def __init__(self, ch):
+        super().__init__()
+        self.op = nn.ConvTranspose2d(ch, ch, 4, stride=2, padding=1)
+
+    def forward(self, x):
+        return self.op(x)
+
+
+class VelocityUNet(nn.Module):
+    """
+    v_theta(z,t,cond) in latent space z.
+    - z: (B, 4, H, W)
+    - t: (B,)
+    - cond: vector (B, cond_dim) [style + content pooled]
+    returns velocity: (B, 4, H, W)
+    """
+    def __init__(self, z_ch=4, base=64, emb_dim=256, cond_dim=1536):
+        super().__init__()
+        self.z_ch = z_ch
+        self.base = base
+        self.emb_dim = emb_dim
+
+        self.time_mlp = nn.Sequential(
+            nn.Linear(emb_dim, emb_dim),
+            nn.SiLU(),
+            nn.Linear(emb_dim, emb_dim)
         )
 
-    def forward(self, style_vector):
-        # Output shape: (Batch, 4, 4, 1, 1) for use in conv2d
-        matrix_params = self.net(style_vector)
-        return matrix_params.view(-1, self.matrix_dim, self.matrix_dim, 1, 1)
+        self.cond_mlp = nn.Sequential(
+            nn.Linear(cond_dim, emb_dim),
+            nn.SiLU(),
+            nn.Linear(emb_dim, emb_dim)
+        )
+
+        self.in_conv = nn.Conv2d(z_ch, base, 3, padding=1)
+
+        self.rb1 = FiLMResBlock(base, base, emb_dim)
+        self.down1 = Down(base)
+
+        self.rb2 = FiLMResBlock(base, base * 2, emb_dim)
+        self.down2 = Down(base * 2)
+
+        self.mid1 = FiLMResBlock(base * 2, base * 2, emb_dim)
+        self.mid2 = FiLMResBlock(base * 2, base * 2, emb_dim)
+
+        self.up2 = Up(base * 2)
+        self.rb_up2 = FiLMResBlock(base * 2 + base * 2, base, emb_dim)
+
+        self.up1 = Up(base)
+        self.rb_up1 = FiLMResBlock(base + base, base, emb_dim)
+
+        self.out_norm = nn.GroupNorm(8, base)
+        self.out_conv = nn.Conv2d(base, z_ch, 3, padding=1)
+
+    def forward(self, z, t, cond):
+        t_emb = sinusoidal_t_embedding(t, self.emb_dim)
+        t_emb = self.time_mlp(t_emb)
+        c_emb = self.cond_mlp(cond)
+        emb = t_emb + c_emb
+
+        x = self.in_conv(z)
+
+        x1 = self.rb1(x, emb)
+        d1 = self.down1(x1)
+
+        x2 = self.rb2(d1, emb)
+        d2 = self.down2(x2)
+
+        m = self.mid1(d2, emb)
+        m = self.mid2(m, emb)
+
+        u2 = self.up2(m)
+        if u2.shape[-2:] != x2.shape[-2:]:
+            u2 = u2[:, :, :x2.shape[2], :x2.shape[3]]
+        u2 = torch.cat([u2, x2], dim=1)
+        u2 = self.rb_up2(u2, emb)
+
+        u1 = self.up1(u2)
+        if u1.shape[-2:] != x1.shape[-2:]:
+            u1 = u1[:, :, :x1.shape[2], :x1.shape[3]]
+        u1 = torch.cat([u1, x1], dim=1)
+        u1 = self.rb_up1(u1, emb)
+
+        v = self.out_conv(F.silu(self.out_norm(u1)))
+        return v
 
 
-class NeuralLinearizer(nn.Module):
+class LinearizerFlow(nn.Module):
     """
-    The Main Model wrapper.
-    Updated to return the Matrix A for monitoring.
+    Full pipeline:
+      x (squeezed spec) --g--> z
+      integrate dz/dt = v_theta(z,t, cond)  t:0->1
+      z1 --g^{-1}--> x_hat (squeezed spec)
     """
-    def __init__(self, num_blocks=6, input_dim=768):
+    def __init__(self, num_blocks=6, z_ch=4, flow_hidden=64, unet_base=64, emb_dim=256, cond_dim=1536):
         super().__init__()
-        self.blocks = nn.ModuleList([InvertibleBlock(channels=4) for _ in range(num_blocks)])
-        self.hypernet = HyperNetwork(input_dim=input_dim)
+        self.blocks = nn.ModuleList([InvertibleBlock(channels=z_ch, hidden=flow_hidden) for _ in range(num_blocks)])
+        self.vnet = VelocityUNet(z_ch=z_ch, base=unet_base, emb_dim=emb_dim, cond_dim=cond_dim)
 
-    def forward(self, x, style_vector):
-        # 1. Encode (g)
-        z = x
-        for block in self.blocks:
-            z = block(z, reverse=False)
-            
-        # 2. Predict Matrix A
-        A = self.hypernet(style_vector) # Shape: (B, 4, 4, 1, 1)
-        
-        # 3. Apply Linear Transform (A * z)
-        # Squeeze A for einsum: (B, 4, 4, 1, 1) -> (B, 4, 4)
-        A_matrix = A.squeeze(-1).squeeze(-1)
-        z_transformed = torch.einsum('bci,bihw->bchw', A_matrix, z)
-        
-        # 4. Decode (g inverse)
-        out = z_transformed
-        for block in reversed(self.blocks):
-            out = block(out, reverse=True)
-            
-        # RETURN BOTH OUTPUT AND MATRIX A
-        return out, A_matrix
+    def encode(self, x_squeezed):
+        z = x_squeezed
+        for b in self.blocks:
+            z = b(z, reverse=False)
+        return z
 
+    def decode(self, z):
+        x = z
+        for b in reversed(self.blocks):
+            x = b(x, reverse=True)
+        return x
+
+    def integrate(self, z0, cond, steps=20, solver="euler"):
+        """
+        Integrate from t=0 to t=1.
+        z0: (B,4,H,W)
+        cond: (B,cond_dim)
+        """
+        if steps < 1:
+            return z0
+
+        z = z0
+        dt = 1.0 / steps
+        for i in range(steps):
+            t = torch.full((z.shape[0],), float(i) / float(steps), device=z.device, dtype=z.dtype)
+
+            if solver == "euler":
+                v = self.vnet(z, t, cond)
+                z = z + dt * v
+
+            elif solver == "heun":
+                v1 = self.vnet(z, t, cond)
+                z_e = z + dt * v1
+                t2 = torch.full((z.shape[0],), float(i + 1) / float(steps), device=z.device, dtype=z.dtype)
+                v2 = self.vnet(z_e, t2, cond)
+                z = z + 0.5 * dt * (v1 + v2)
+
+            else:
+                raise ValueError("solver must be 'euler' or 'heun'")
+
+        return z
+
+    def forward(self, x_squeezed, cond, steps=20, solver="euler"):
+        z0 = self.encode(x_squeezed)
+        z1 = self.integrate(z0, cond=cond, steps=steps, solver=solver)
+        x_hat = self.decode(z1)
+        return x_hat
 
 # =============================================================================
 # CONFIGURATION FUNCTIONS
@@ -591,6 +764,7 @@ def get_lstm_config():
         'dropout': 0.3,
         'bidirectional': True
     }
+    
     
 def get_linearizer_config():
     """
