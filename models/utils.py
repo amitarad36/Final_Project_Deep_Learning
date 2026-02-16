@@ -21,7 +21,6 @@ try:
 except:
     pass
 
-
 # ==============================================================================
 # Universal Trainer
 # ==============================================================================
@@ -318,7 +317,6 @@ class Separator:
                 est = self.model(mix)
                 return est.squeeze().cpu().numpy()
 
-
 # ==============================================================================
 # Metrics Calculation
 # ==============================================================================
@@ -413,12 +411,10 @@ class AudioProcessor:
         )
         return waveform.cpu().numpy()
 
-
 # ==============================================================================
 # 2. DATASET
 # ==============================================================================
 
-# Robust waveform dataset for general use
 class StandardDataset(Dataset):
     """
     Loads pairs from cached files for training/validation.
@@ -471,10 +467,10 @@ class StandardDataset(Dataset):
                 'tgt': torch.tensor(t, dtype=torch.float32)
             }
 
-# Chunked dataset for fixed-length segments with overlap
 # ==============================================================================
 # CONFIGURATION FUNCTIONS
 # ==============================================================================
+
 def get_training_config():
     """
     Returns general training configuration for Model A.
@@ -507,6 +503,7 @@ def get_training_config_unet():
 # ==============================================================================
 # HELPER FUNCTIONS
 # ==============================================================================
+
 def play_audio(waveform, sr=22050, title="Audio"):
     """
     Plays audio waveform in notebook.
@@ -519,6 +516,7 @@ def play_audio(waveform, sr=22050, title="Audio"):
 # ==============================================================================
 # NOTEBOOK COMPACT HELPERS
 # ==============================================================================
+
 def get_curriculum_file_lists(cache_dir="../data", split='train'):
     """
     Returns sorted file lists for stage1 and stage2 (mixture/target).
@@ -551,7 +549,6 @@ def get_curriculum_file_lists(cache_dir="../data", split='train'):
     tgt_files_stage2 = sorted(list(s2_tgt_path.glob("*.npy"))) if s2_tgt_path.exists() else []
 
     return mix_files_stage1, tgt_files_stage1, mix_files_stage2, tgt_files_stage2
-
 
 def plot_loss_from_checkpoint(ckpt_path, title="Loss Curves from Checkpoint"):
     """
@@ -619,7 +616,6 @@ def plot_loss_from_checkpoint(ckpt_path, title="Loss Curves from Checkpoint"):
         print(f"❌ Error plotting checkpoint: {e}")
         import traceback
         traceback.print_exc()
-
 
 def demo_separation_sample(
     model,
@@ -716,6 +712,7 @@ def demo_separation_sample(
 # ==============================================================================
 # MUSDB18 PREPROCESSING (Main Entry Point)
 # ==============================================================================
+
 def preprocess_musdb18(
     musdb18_path,
     output_dir,
@@ -1125,6 +1122,7 @@ def get_data_loaders(data_dir, stage='stage1', split='train', batch_size=16, num
 # ==============================================================================
 # LEGACY CACHING LOGIC (Kept for backward compatibility)
 # ==============================================================================
+
 def show_spectrogram(tensor, title="Spectrogram"):
     """
     Plots a tensor spectrogram (C, F, T) as a dB-scaled image.
@@ -1141,10 +1139,10 @@ def show_spectrogram(tensor, title="Spectrogram"):
     plt.tight_layout()
     plt.show()
 
-
 # ===============================================================================
 # MUSDB18 STEM LOADING (for preprocessing)
 # ===============================================================================
+
 def load_musdb_stems(track_folder, sr=22050):
     """
     Loads the four MUSDB18 stems (vocals, drums, bass, other) from a track folder.
@@ -1168,7 +1166,6 @@ def load_musdb_stems(track_folder, sr=22050):
             audio = librosa.resample(audio, orig_sr=file_sr, target_sr=sr)
         stems[stem] = audio
     return stems
-
 
 # ===============================================================================
 # MUSDB18 PREPROCESSING FUNCTIONS
@@ -1240,7 +1237,6 @@ def process_stage2() -> None:
                 np.save(tgt_dir / f"{track_folder.name}_chunk{i}.npy", tgt_chunk)
         print(f"✅ {split} complete: {len(list(mix_dir.glob('*.npy')))} chunks")
 
-
 # Vocals Only: Clean vocal stems for source separation
 def process_vocals() -> None:
     """
@@ -1285,10 +1281,10 @@ def process_vocals() -> None:
         num_singers = len(set(f.stem.split('_chunk')[0] for f in out_dir.glob('*.npy')))
         print(f"✅ {split} complete: {num_chunks} chunks from {num_singers} singers")
 
-
 # ===============================================================================
 # INFERENCE: SEPARATE FULL-LENGTH SONGS
 # ===============================================================================
+
 def separate_full_song(
     model,
     processor,
@@ -1404,10 +1400,10 @@ def separate_full_song(
     
     return output
 
-
 # ==============================================================================
 # VISUALIZATION AND EVALUATION UTILITIES
 # ==============================================================================
+
 def plot_spectrograms_and_play_audio(mixture, prediction, ground_truth, sr=22050, 
                                      title="Evaluation", show_audio=True):
     """
@@ -1482,7 +1478,6 @@ def plot_spectrograms_and_play_audio(mixture, prediction, ground_truth, sr=22050
         print("\n🎵 Ground Truth (Target Vocals):")
         display(Audio(truth_norm, rate=sr))
 
-
 # ===============================================================================
 # MODEL A COMPARISON UTILITIES
 # ===============================================================================
@@ -1504,7 +1499,6 @@ def initialize_model_a_lstm(device='cuda'):
     
     return model, processor, optimizer, loss_fn
 
-
 def initialize_model_a_unet(device='cuda'):
     """Initialize Model A (U-Net) with default configuration."""
     from models import models
@@ -1522,7 +1516,6 @@ def initialize_model_a_unet(device='cuda'):
     loss_fn = nn.MSELoss()
     
     return model, processor, optimizer, loss_fn
-
 
 def train_model_stage(
     model,
@@ -1580,7 +1573,6 @@ def train_model_stage(
     print(f"✅ Training complete! Best val loss: {min(hist['val_loss']):.6f}")
     return hist
 
-
 def load_training_history_from_checkpoint(ckpt_path):
     """Load training history from checkpoint or epoch files."""
     import re
@@ -1612,7 +1604,6 @@ def load_training_history_from_checkpoint(ckpt_path):
         return ckpt.get('history', {})
     
     return {}
-
 
 def plot_model_comparison(hist_lstm, hist_unet, title="Model A Comparison: LSTM vs U-Net"):
     """Plot side-by-side training curves for LSTM and U-Net."""
@@ -1664,7 +1655,6 @@ def plot_model_comparison(hist_lstm, hist_unet, title="Model A Comparison: LSTM 
     # Winner
     winner = "LSTM" if min(hist_lstm['val_loss']) < min(hist_unet['val_loss']) else "U-Net"
     print(f"\n🏆 Best Performance: {winner}")
-
 
 def evaluate_separation_quality(model_lstm, model_unet, processor_lstm, processor_unet, 
                                 test_data_dir, stage='stage1', num_samples=10, sr=22050, device='cuda'):
@@ -1814,7 +1804,6 @@ def evaluate_separation_quality(model_lstm, model_unet, processor_lstm, processo
     
     return {'lstm': lstm_metrics, 'unet': unet_metrics}
 
-
 # ==============================================================================
 # Test Evaluation Functions
 # ==============================================================================
@@ -1827,14 +1816,12 @@ def load_test_results(ckpt_path):
             return pickle.load(f)
     return None
 
-
 def save_test_results(results, ckpt_path):
     """Save test results to checkpoint"""
     import pickle
     with open(ckpt_path, 'wb') as f:
         pickle.dump(results, f)
     print(f"✅ Saved test results to: {ckpt_path.name}")
-
 
 def evaluate_test_set(model, processor, test_data_dir, stage, loss_fn, device, sr=22050):
     """
@@ -1908,7 +1895,6 @@ def evaluate_test_set(model, processor, test_data_dir, stage, loss_fn, device, s
 
     return {'test_losses': test_losses, 'mean': avg_test_loss, 'std': std_test_loss}
 
-
 def sliding_window_inference(model, processor, audio, chunk_len=8.0, sr=22050, device='cuda'):
     """Apply model with overlapping windows for long audio"""
     chunk_samples = int(chunk_len * sr)
@@ -1955,7 +1941,6 @@ def sliding_window_inference(model, processor, audio, chunk_len=8.0, sr=22050, d
     print(" Done!")
     return np.divide(output, weights, where=weights > 0, out=output.copy())
 
-
 def to_spec(wav, processor):
     """
     Convert waveform to displayable spectrogram.
@@ -1966,7 +1951,6 @@ def to_spec(wav, processor):
     # If first dimension is smaller, it's likely (freq, time) already - keep it
     # If first dimension is larger, it's likely (time, freq) - transpose it
     return s if s.shape[0] < s.shape[1] else s.T
-
 
 def unet_inference_accelerator(model, processor, audio, chunk_len=8.0, sr=22050, device='cuda', batch_size=16):
     """
@@ -2061,7 +2045,6 @@ def unet_inference_accelerator(model, processor, audio, chunk_len=8.0, sr=22050,
     
     print(" Done!")
     return np.divide(output, weights, where=weights > 0, out=output.copy())
-
 
 def compare_models_on_audio_file(file_path, model_lstm, model_unet, processor_lstm, 
                                   processor_unet, device, sr=22050, duration=None, unet_batch_size=16):
