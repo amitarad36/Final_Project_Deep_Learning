@@ -14,7 +14,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 
-
 # =============================================================================
 # MODEL A (U-NET): 2D Convolutional Architecture
 # =============================================================================
@@ -109,7 +108,6 @@ class TimeFrequencyDomainUNet(nn.Module):
         x = self.sigmoid(self.final_conv(x))
         return x[:, :, :h, :w]
 
-
 # =============================================================================
 # ATTENTION-BASED U-NET: U-Net with Self-Attention at Bottleneck
 # =============================================================================
@@ -167,7 +165,6 @@ class MultiHeadSelfAttention2D(nn.Module):
         
         # 7. Residual Connection + Norm
         return self.norm(x + out)
-
 
 class UNetAttention(nn.Module):
     """
@@ -233,7 +230,6 @@ class UNetAttention(nn.Module):
 
         x = self.sigmoid(self.final_conv(x))
         return x[:, :, :h, :w]
-
 
 # =============================================================================
 # MODEL A (LSTM): Sequential LSTM-Based Masking
@@ -350,7 +346,6 @@ class SpectrogramMaskingLSTM(nn.Module):
         
         return mask
 
-
 class CompactLSTMMasking(nn.Module):
     """
     Lightweight LSTM-based masking model for faster training.
@@ -429,7 +424,6 @@ class CompactLSTMMasking(nn.Module):
         
         return mask
 
-
 # =============================================================================
 # CONFIGURATION FUNCTIONS
 # =============================================================================
@@ -448,7 +442,6 @@ def get_unet_config():
         'dropout': 0.1
     }
 
-
 def get_unet_attention_config():
     """
     Returns configuration for U-Net with Attention (UNetAttention).
@@ -463,7 +456,6 @@ def get_unet_attention_config():
         'batchnorm': True,
         'dropout': 0.1
     }
-
 
 def get_lstm_config():
     """
