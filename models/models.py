@@ -346,7 +346,6 @@ class SpectrogramMaskingLSTM(nn.Module):
         
         return mask
 
-class CompactLSTMMasking(nn.Module):
     """
     Lightweight LSTM-based masking model for faster training.
     Simplified version with fewer parameters.
