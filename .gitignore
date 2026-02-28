@@ -1,42 +1,37 @@
 data/
+data_sub/
+data_full/
 !data/checkpoints/
 data/checkpoints/*
 !data/checkpoints/.gitkeep
 checkpoints/*
 
-# musdb18 dataset
 musdb18/
 
-# Zip files
+
 *.zip
 
-# Generated outputs
 outputs/
 
-# Python cache
 __pycache__/
 *.pyc
 *.pyo
 *.egg-info/
 .Python
 
-# Jupyter
 .ipynb_checkpoints/
 *.ipynb_checkpoints
 
-# IDE
 .vscode/
 .idea/
 *.swp
 *.swo
 
-# Environment
 .conda/
 .env
 venv/
 env/
 deep-music-cuda/
 
-# OS
 .DS_Store
 Thumbs.db

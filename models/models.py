@@ -9,14 +9,10 @@ and several configuration functions to easily instantiate these models with pred
 Authors: Amit & Alon
 Date: January 2026
 """
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
-
-# =============================================================================
-# MODEL A (U-NET): 2D Convolutional Architecture
-# =============================================================================
 
 class ConvLayer2D(nn.Module):
     """
@@ -39,7 +35,7 @@ class EncoderBlock(nn.Module):
     def __init__(self, in_channels, out_channels, batchnorm=True, dropout=0.0):
         super().__init__()
         self.block = nn.Sequential(
-            ConvLayer2D(in_channels, out_channels, 3, 1, 1, batchnorm, dropout), #defa
+            ConvLayer2D(in_channels, out_channels, 3, 1, 1, batchnorm, dropout),
             ConvLayer2D(out_channels, out_channels, 3, 1, 1, batchnorm, dropout)
         )
         self.pool = nn.MaxPool2d(2, 2)
@@ -108,9 +104,6 @@ class TimeFrequencyDomainUNet(nn.Module):
         x = self.sigmoid(self.final_conv(x))
         return x[:, :, :h, :w]
 
-# =============================================================================
-# ATTENTION-BASED U-NET: U-Net with Self-Attention at Bottleneck
-# =============================================================================
 
 class MultiHeadSelfAttention2D(nn.Module):
     """
@@ -126,44 +119,32 @@ class MultiHeadSelfAttention2D(nn.Module):
 
         assert in_channels % num_heads == 0, "Channels must be divisible by num_heads"
 
-        # Projections for Q, K, V
         self.qkv = nn.Linear(in_channels, in_channels * 3)
         self.proj = nn.Linear(in_channels, in_channels)
-        self.norm = nn.GroupNorm(1, in_channels)  # LayerNorm equivalent for 2D inputs
+        self.norm = nn.GroupNorm(1, in_channels)
         self.dropout = nn.Dropout(dropout)
 
     def forward(self, x):
         b, c, h, w = x.shape
         
-        # 1. Flatten spatial dimensions: (B, C, H, W) -> (B, C, H*W) -> (B, H*W, C)
-        # This treats every pixel (Freq, Time) as a token in the sequence.
-        flattened = x.view(b, c, -1).permute(0, 2, 1)  # (Batch, Seq_Len, Channels)
+        flattened = x.view(b, c, -1).permute(0, 2, 1)
         
-        # 2. Compute Q, K, V
-        # Shape: (B, Seq_Len, 3 * C)
+
         qkv = self.qkv(flattened)
-        # Reshape to (B, Seq_Len, 3, Num_Heads, Head_Dim) -> (3, B, Heads, Seq_Len, Dim)
         qkv = qkv.reshape(b, h * w, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]
 
-        # 3. Scaled Dot-Product Attention
-        # (B, Heads, Seq_Len, Dim) @ (B, Heads, Dim, Seq_Len) -> (B, Heads, Seq_Len, Seq_Len)
         attn = (q @ k.transpose(-2, -1)) * self.scale
         attn = attn.softmax(dim=-1)
         attn = self.dropout(attn)
 
-        # 4. Combine Heads
-        # (B, Heads, Seq_Len, Seq_Len) @ (B, Heads, Seq_Len, Dim) -> (B, Heads, Seq_Len, Dim)
         out = (attn @ v).transpose(1, 2).reshape(b, h * w, c)
-        
-        # 5. Output Projection
+
         out = self.proj(out)
         out = self.dropout(out)
 
-        # 6. Reshape back to 2D feature map
         out = out.permute(0, 2, 1).view(b, c, h, w)
-        
-        # 7. Residual Connection + Norm
+
         return self.norm(x + out)
 
 class UNetAttention(nn.Module):
@@ -177,24 +158,18 @@ class UNetAttention(nn.Module):
         self.encoders = nn.ModuleList()
         self.decoders = nn.ModuleList()
 
-        # --- Encoder Path ---
         for i in range(num_layers):
             inc = in_channels if i == 0 else base_filters * (2 ** (i - 1))
             outc = base_filters * (2 ** i)
             self.encoders.append(EncoderBlock(inc, outc, batchnorm=batchnorm, dropout=dropout))
 
-        # --- Bottleneck ---
         bot_in = base_filters * (2 ** (num_layers - 1))
         bot_out = base_filters * (2 ** num_layers)
-        
-        # 1. Standard Conv Bottleneck
+
         self.bottleneck_conv = ConvLayer2D(bot_in, bot_out, kernel_size=3, stride=1, padding=1, batchnorm=batchnorm, dropout=dropout)
-        
-        # 2. Attention Mechanism
-        # We apply attention to the bottleneck features to improve feature representation
+
         self.bottleneck_attn = MultiHeadSelfAttention2D(bot_out, num_heads=num_heads, dropout=dropout)
 
-        # --- Decoder Path ---
         for i in range(num_layers - 1, -1, -1):
             dec_in = bot_out if i == num_layers - 1 else base_filters * (2 ** (i + 1))
             dec_out = base_filters * (2 ** i)
@@ -206,34 +181,27 @@ class UNetAttention(nn.Module):
     def forward(self, x):
         _, _, h, w = x.shape
         
-        # Padding (Same as standard U-Net)
         multiple = 2 ** self.num_layers
         pad_h = int((multiple - (h % multiple)) % multiple)
         pad_w = int((multiple - (w % multiple)) % multiple)
         if pad_h > 0 or pad_w > 0:
             x = F.pad(x, (0, pad_w, 0, pad_h), mode="constant", value=0.0)
 
-        # Encoder
         skips = []
         for enc in self.encoders:
             x, p = enc(x)
             skips.append(x)
             x = p
 
-        # Bottleneck (Conv -> Attention)
         x = self.bottleneck_conv(x)
-        x = self.bottleneck_attn(x)  # <--- Attention mechanism applied
+        x = self.bottleneck_attn(x)
 
-        # Decoder
         for dec, skip in zip(self.decoders, reversed(skips)):
             x = dec(x, skip)
 
         x = self.sigmoid(self.final_conv(x))
         return x[:, :, :h, :w]
 
-# =============================================================================
-# MODEL A (LSTM): Sequential LSTM-Based Masking
-# =============================================================================
 
 class SpectrogramMaskingLSTM(nn.Module):
     """
@@ -257,11 +225,11 @@ class SpectrogramMaskingLSTM(nn.Module):
     
     def __init__(
         self, 
-        freq_bins=1025,          # Number of frequency bins (n_fft // 2 + 1)
-        hidden_size=512,         # LSTM hidden size
-        num_layers=2,            # Number of LSTM layers
-        dropout=0.3,             # Dropout rate
-        bidirectional=True       # Use bidirectional LSTM
+        freq_bins=1025,
+        hidden_size=512,
+        num_layers=2,
+        dropout=0.3,
+        bidirectional=True
     ):
         super().__init__()
         
@@ -270,12 +238,8 @@ class SpectrogramMaskingLSTM(nn.Module):
         self.num_layers = num_layers
         self.bidirectional = bidirectional
         
-        # Layer normalization (more robust across PyTorch versions than BatchNorm1d)
         self.layer_norm = nn.LayerNorm(freq_bins)
-        
-        # LSTM for temporal modeling
-        # Input: (batch, time, freq_bins)
-        # Output: (batch, time, hidden_size * num_directions)
+
         self.lstm = nn.LSTM(
             input_size=freq_bins,
             hidden_size=hidden_size,
@@ -284,8 +248,7 @@ class SpectrogramMaskingLSTM(nn.Module):
             dropout=dropout if num_layers > 1 else 0,
             bidirectional=bidirectional
         )
-        
-        # Embedding layers to map LSTM output to mask
+
         lstm_output_size = hidden_size * 2 if bidirectional else hidden_size
         
         self.embedding = nn.Sequential(
@@ -293,7 +256,7 @@ class SpectrogramMaskingLSTM(nn.Module):
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_size, freq_bins),
-            nn.Sigmoid()  # Mask values in [0, 1]
+            nn.Sigmoid()
         )
     
     def forward(self, x):
@@ -307,48 +270,33 @@ class SpectrogramMaskingLSTM(nn.Module):
         Returns:
             mask: Predicted mask of shape (batch, 1, freq_bins, time_steps)
         """
-        # Handle input shape robustly - ensure it's 4D
         if x.ndim == 3:
-            # If missing channel dimension, add it
             x = x.unsqueeze(1)
         elif x.ndim != 4:
             raise ValueError(f"Expected 3D or 4D input, got shape {x.shape}")
         
         batch_size, num_channels, freq_bins, time_steps = x.shape
         
-        # Remove channel dimension: (batch, freq_bins, time_steps)
         if num_channels == 1:
             x = x.squeeze(1)
         else:
-            # If multiple channels, take first one
             x = x[:, 0, :, :]
-        
-        # Manual normalization: (batch, freq_bins, time_steps)
-        # Normalize across frequency dimension for each time step
-        mean = x.mean(dim=1, keepdim=True)  # (batch, 1, time_steps)
-        std = x.std(dim=1, keepdim=True) + 1e-8  # (batch, 1, time_steps)
-        x_normalized = (x - mean) / std  # (batch, freq_bins, time_steps)
-        
-        # Transpose for LSTM: (batch, time_steps, freq_bins)
+
+        mean = x.mean(dim=1, keepdim=True)
+        std = x.std(dim=1, keepdim=True) + 1e-8
+        x_normalized = (x - mean) / std
+
         x_normalized = x_normalized.transpose(1, 2)
-        
-        # LSTM processing
+
         lstm_out, _ = self.lstm(x_normalized)
-        
-        # Embedding layer to generate mask
+
         mask = self.embedding(lstm_out)
-        
-        # Transpose back to spectrogram format: (batch, freq_bins, time_steps)
+
         mask = mask.transpose(1, 2)
-        
-        # Add channel dimension: (batch, 1, freq_bins, time_steps)
+
         mask = mask.unsqueeze(1)
         
         return mask
-
-# =============================================================================
-# CONFIGURATION FUNCTIONS
-# =============================================================================
 
 def get_unet_config():
     """
@@ -385,7 +333,7 @@ def get_lstm_config():
     """
     return {
         'model_type': 'lstm',
-        'freq_bins': 1025,  # For n_fft=2048: 2048//2 + 1
+        'freq_bins': 1025,
         'hidden_size': 512,
         'num_layers': 2,
         'dropout': 0.3,
