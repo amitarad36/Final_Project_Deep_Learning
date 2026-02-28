@@ -17,15 +17,239 @@ try:
 except:
     pass
 
+def verify_and_install_packages(packages):
+    print("Verifying and installing missing packages if necessary...")
+    
+    for package in packages:
+        try:
+            __import__(package)
+            print(f"  {package} is installed.")
+        except ImportError:
+            print(f"  {package} is NOT installed. Attempting to install...")
+            try:
+                import sys
+                import subprocess
+                subprocess.check_call([sys.executable, '-m', 'pip', 'install', package])
+                __import__(package)
+                print(f"  {package} is now installed.")
+            except Exception as e:
+                print(f"  Failed to install {package}: {e}")
+
+def check_pytorch_cuda_status():
+    print("\n--- PyTorch CUDA status ---")
+    try:
+        import torch
+        if torch.cuda.is_available():
+            print(f"  PyTorch with CUDA (version {torch.version.cuda}) is available.")
+            print(f"     CUDA Device Name: {torch.cuda.get_device_name(0)}")
+        else:
+            print("  PyTorch is installed, but CUDA is NOT available.")
+    except ImportError:
+        print("  PyTorch is NOT installed.")
+
+def set_seed(seed=42):
+    import random
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+
+def setup_project_environment():
+    import sys
+    
+    try:
+        import google.colab
+        IN_COLAB = True
+    except:
+        IN_COLAB = False
+    
+    if IN_COLAB:
+        PROJECT_ROOT = Path('/content/drive/MyDrive/Colab Notebooks/Final_Project_Deep_Learning')
+        print(f"Colab Project Root: {PROJECT_ROOT}")
+    else:
+        PROJECT_ROOT = Path.cwd()
+        if not (PROJECT_ROOT / 'mainNB.ipynb').exists():
+            for p in [PROJECT_ROOT] + list(PROJECT_ROOT.parents):
+                if (p / 'mainNB.ipynb').exists():
+                    PROJECT_ROOT = p
+                    break
+    
+    os.chdir(PROJECT_ROOT)
+    
+    DATA_DIR = PROJECT_ROOT / "data"
+    CHECKPOINT_DIR = PROJECT_ROOT / "checkpoints"
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
+    
+    if str(PROJECT_ROOT) not in sys.path:
+        sys.path.append(str(PROJECT_ROOT))
+    
+    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    
+    print(f"\nConfiguration Complete:")
+    print(f"   - Device: {device}")
+    print(f"   - Working Directory: {os.getcwd()}")
+    print(f"   - Data Directory: {DATA_DIR}")
+    print(f"   - Checkpoints Directory: {CHECKPOINT_DIR}")
+    
+    return PROJECT_ROOT, DATA_DIR, CHECKPOINT_DIR, device, IN_COLAB
+
+def verify_musdb18_dataset(project_root):
+    musdb18_path = project_root / "musdb18"
+    
+    if not musdb18_path.exists():
+        print("MUSDB18 folder not found!")
+        print(f"   Expected location: {musdb18_path}")
+        print("")
+        print("Download MUSDB18:")
+        print("   1. Register at https://zenodo.org/record/1438122")
+        print("   2. Download MUSDB18-HQ.zip (~22GB)")
+        print("   3. Extract to project folder as 'musdb18'")
+        print("")
+        return None
+    
+    train_dir = musdb18_path / "train"
+    valid_dir = musdb18_path / "valid"
+    test_dir = musdb18_path / "test"
+    
+    if train_dir.exists() and test_dir.exists():
+        num_train = len(list(train_dir.iterdir()))
+        num_valid = len(list(valid_dir.iterdir())) if valid_dir.exists() else 0
+        num_test = len(list(test_dir.iterdir()))
+        print(f"MUSDB18 dataset found: {musdb18_path}")
+        print(f"   Train: {num_train} tracks")
+        print(f"   Valid: {num_valid} tracks")
+        print(f"   Test: {num_test} tracks")
+        return musdb18_path
+    else:
+        print(f"Found musdb18 folder but missing train/test subfolders")
+        print(f"   Path: {musdb18_path}")
+        return None
+
+def extract_and_process_data(project_root, data_dir, musdb18_path, in_colab, folders_to_extract=['stage1', 'stage2', 'vocals'], sample_rate=22050, chunk_duration=8.0, chunk_overlap=4.0):
+    import shutil
+    import time
+    import zipfile
+    from tqdm import tqdm
+    
+    drive_zip_path = project_root / "data.zip"
+    local_extract_root = Path("/content/local_data")
+    local_data_dir = local_extract_root / "data"
+    
+    if in_colab:
+        print(f"Checking for local data at: {local_data_dir}")
+        
+        if not local_data_dir.exists():
+            print("Data not found locally. Starting extraction...")
+            print(f"Source: {drive_zip_path}")
+            print(f"Destination: {local_extract_root}")
+            if folders_to_extract:
+                print(f"Extracting only: {', '.join(folders_to_extract)}")
+            
+            local_extract_root.mkdir(parents=True, exist_ok=True)
+            
+            if drive_zip_path.exists():
+                t0 = time.time()
+                print("Unzipping from Drive with progress tracking...")
+                
+                try:
+                    with zipfile.ZipFile(drive_zip_path, 'r') as zip_ref:
+                        all_files = zip_ref.namelist()
+                        
+                        if folders_to_extract:
+                            folders_normalized = [f.strip('/') for f in folders_to_extract]
+                            file_list = [
+                                f for f in all_files 
+                                if any(
+                                    f.startswith(f'data/{folder}/') or f.startswith(f'{folder}/')
+                                    for folder in folders_normalized
+                                )
+                            ]
+                            print(f"Filtering: {len(file_list):,} / {len(all_files):,} files selected")
+                        else:
+                            file_list = all_files
+                            print(f"Extracting all {len(file_list):,} files")
+                        
+                        for file in tqdm(file_list, desc="Extracting", unit="file"):
+                            zip_ref.extract(file, local_extract_root)
+                    
+                    t_final = time.time() - t0
+                    print(f"Unzip complete in {t_final/60:.1f} minutes!")
+                    
+                    if local_data_dir.exists():
+                        extracted_folders = [d.name for d in local_data_dir.iterdir() if d.is_dir()]
+                        print(f"Extracted folders: {', '.join(extracted_folders)}")
+                    
+                    data_dir = local_data_dir
+                except Exception as e:
+                    print(f"Unzip failed: {e}")
+                    print("   Falling back to Drive path (slow)")
+                    data_dir = project_root / "data"
+            else:
+                print(f"Error: Could not find {drive_zip_path}")
+                print("   Please ensure 'data.zip' is uploaded to your Drive project folder.")
+                data_dir = project_root / "data"
+        else:
+            print("Fast local data already exists! Skipping unzip.")
+            data_dir = local_data_dir
+        
+        print(f"DATA_DIR set to: {data_dir}")
+        
+        total, used, free = shutil.disk_usage("/")
+        print(f"Disk Space: {free // (2**30)} GB free / {total // (2**30)} GB total")
+    else:
+        data_dir = project_root / "data"
+        print(f"Running locally. Using repo data: {data_dir}")
+    
+    if musdb18_path:
+        global MUSDB_SPLITS, DATA_DIR, SAMPLE_RATE, CHUNK_DURATION, CHUNK_OVERLAP
+        MUSDB_SPLITS = {
+            'train': musdb18_path / 'train',
+            'val': musdb18_path / 'valid',
+            'test': musdb18_path / 'test',
+        }
+        DATA_DIR = data_dir
+        SAMPLE_RATE = sample_rate
+        CHUNK_DURATION = chunk_duration
+        CHUNK_OVERLAP = chunk_overlap
+        
+        print(f"\n{'='*70}")
+        print("CHECKING DATA FOLDERS")
+        print(f"{'='*70}")
+        
+        has_stage1 = (data_dir / 'stage1').exists()
+        has_stage2 = (data_dir / 'stage2').exists()
+        has_vocals = (data_dir / 'vocals').exists()
+        
+        if has_stage1:
+            print("Stage1 data found - processing...")
+            process_stage1()
+        else:
+            print("Stage1 not extracted - skipping")
+        
+        if has_stage2:
+            print("Stage2 data found - processing...")
+            process_stage2()
+        else:
+            print("Stage2 not extracted - skipping")
+        
+        if has_vocals:
+            print("Vocals data found - processing...")
+            process_vocals()
+        else:
+            print("Vocals not extracted - skipping")
+        
+        print(f"\n{'='*70}")
+        print("SYSTEM READY")
+        print(f"{'='*70}")
+    else:
+        print("MUSDB18_PATH not set - skipping preprocessing")
+    
+    return data_dir
+
 class UniversalTrainer:
-    """
-    Generic trainer for spectrogram and waveform models.
-    Handles both input types via config flag or input check.
-    """
     def __init__(self, model, train_loader, val_loader, processor, optimizer, loss_fn, device='cpu', patience=10, input_type='spectrogram'):
-        """
-        Initializes UniversalTrainer with model, data loaders, processor, optimizer, loss function, device, patience, and input_type ('spectrogram' or 'waveform').
-        """
         self.model = model.to(device)
         self.processor = processor
         self.train_loader = train_loader
@@ -39,18 +263,14 @@ class UniversalTrainer:
         self.best_val_loss = float('inf')
 
     def train_epoch(self, epoch_idx, num_epochs):
-        """
-        Trains for one epoch and returns average loss.
-        Implements: mask is applied in linear domain, loss is computed in log domain (Option 3).
-        """
         self.model.train()
         total_loss = 0
         batch_count = 0
         
-        def _in_notebook() -> bool:
+        def _in_notebook():
             try:
                 from IPython import get_ipython
-                shell: str = get_ipython().__class__.__name__
+                shell = get_ipython().__class__.__name__
                 return shell == 'ZMQInteractiveShell'
             except:
                 return False
@@ -67,9 +287,9 @@ class UniversalTrainer:
             tgt = batch['tgt']
             
             if isinstance(mix, torch.Tensor):
-                mix: torch.Tensor = mix.to(self.device)
+                mix = mix.to(self.device)
             if isinstance(tgt, torch.Tensor):
-                tgt: torch.Tensor = tgt.to(self.device)
+                tgt = tgt.to(self.device)
             
             if self.input_type == 'spectrogram':
                 if isinstance(mix, tuple):
@@ -247,30 +467,18 @@ class UniversalTrainer:
         return self.history
 
 class Separator:
-    """
-    Generic inference class for source separation models.
-    """
     def __init__(self, model, processor, device='cpu', input_type='spectrogram'):
-        """
-        Initializes Separator with model, processor, device, and input_type.
-        """
         self.model = model.to(device)
         self.processor = processor
         self.device = device
         self.input_type = input_type
 
     def separate(self, mixture):
-        """
-        Separates sources from mixture using trained model.
-        Returns estimated output.
-        
-        FIXED: Applies mask in LINEAR domain to match training pipeline.
-        """
         self.model.eval()
         with torch.no_grad():
-            mix: torch.Tensor = torch.tensor(mixture).to(self.device).float()
+            mix = torch.tensor(mixture).to(self.device).float()
             if mix.ndim == 1:
-                mix: torch.Tensor = mix.unsqueeze(0)
+                mix = mix.unsqueeze(0)
             if self.input_type == 'spectrogram':
                 mix_log, mix_phase = self.processor.to_spectrogram(mix)
                 mix_in = mix_log.unsqueeze(1)
@@ -285,10 +493,6 @@ class Separator:
                 return est.squeeze().cpu().numpy()
 
 def calculate_metrics(reference, estimate, sr=22050):
-    """
-    Calculates SDR, SIR, SAR using museval.
-    Returns a dict of metrics.
-    """
     import museval
     reference = np.atleast_2d(reference)
     estimate = np.atleast_2d(estimate)
@@ -301,9 +505,6 @@ def calculate_metrics(reference, estimate, sr=22050):
     return metrics
 
 class AudioProcessor:
-    """
-    Handles conversions between waveform and spectrogram representations.
-    """
     def __init__(self, n_fft=2048, hop_length=512, device='cpu'):
         self.n_fft = n_fft
         self.hop_length = hop_length
@@ -311,21 +512,17 @@ class AudioProcessor:
         self.window = torch.hann_window(n_fft).to(device)
 
     def to_spectrogram(self, waveform):
-        """
-        Converts waveform to log-magnitude spectrogram and phase.
-        Returns (log_mag, phase).
-        """
         if isinstance(waveform, np.ndarray):
-            waveform: torch.Tensor = torch.from_numpy(waveform)
+            waveform = torch.from_numpy(waveform)
         elif isinstance(waveform, (list, tuple)):
             if len(waveform) == 0:
-                waveform: torch.Tensor = torch.empty(0)
+                waveform = torch.empty(0)
             elif isinstance(waveform[0], torch.Tensor):
-                waveform: torch.Tensor = torch.stack(waveform)
+                waveform = torch.stack(waveform)
             elif isinstance(waveform[0], np.ndarray):
-                waveform: torch.Tensor = torch.from_numpy(np.stack(waveform))
+                waveform = torch.from_numpy(np.stack(waveform))
             else:
-                waveform: torch.Tensor = torch.tensor(waveform)
+                waveform = torch.tensor(waveform)
         if waveform.ndim == 1:
             waveform = waveform.unsqueeze(0) # Add channel dim
             
@@ -356,8 +553,8 @@ class AudioProcessor:
         log_mag = log_mag.to(self.device)
         phase = phase.to(self.device)
         
-        lin_mag: torch.Tensor = torch.expm1(log_mag)
-        complex_spec: torch.Tensor = lin_mag * torch.exp(1j * phase)
+        lin_mag = torch.expm1(log_mag)
+        complex_spec = lin_mag * torch.exp(1j * phase)
         
         waveform = torch.istft(
             complex_spec, 
@@ -368,11 +565,6 @@ class AudioProcessor:
         return waveform.cpu().numpy()
 
 class StandardDataset(Dataset):
-    """
-    Loads pairs from cached files for training/validation.
-    Supports both waveforms (.npy) and spectrograms (.npz).
-    Returns dicts with keys 'mix' and 'tgt'.
-    """
     def __init__(self, mix_files, tgt_files):
         self.mix_files = list(mix_files)
         self.tgt_files = list(tgt_files)
@@ -416,33 +608,21 @@ class StandardDataset(Dataset):
                 'tgt': torch.tensor(t, dtype=torch.float32)
             }
 
-def get_training_config():
-    """
-    Returns general training configuration for Model A.
-    """
-    return {
+def get_training_config(model_type='default'):
+    config = {
         'batch_size': 16,
         'learning_rate': 1e-4,
         'num_epochs': 50,
-        'chunk_duration': 1.0,  # 1 second chunks
-        'chunk_overlap': 0.5,   # 0.5 second overlap (50%)
+        'chunk_duration': 1.0,
+        'chunk_overlap': 0.5,
         'device': 'cuda' if torch.cuda.is_available() else 'cpu'
     }
-
-def get_training_config_lstm():
-    """
-    Returns training configuration for the full LSTM model.
-    """
-    config = get_training_config().copy()
-    config['batch_size'] = 32
-    return config
-
-def get_training_config_unet():
-    """
-    Returns training configuration for the U-Net model (smaller batch for VRAM).
-    """
-    config = get_training_config().copy()
-    config['batch_size'] = 8
+    
+    if model_type == 'lstm':
+        config['batch_size'] = 32
+    elif model_type == 'unet':
+        config['batch_size'] = 8
+    
     return config
 
 def play_audio(waveform, sr=22050, title="Audio"):
@@ -455,16 +635,6 @@ def play_audio(waveform, sr=22050, title="Audio"):
     display(Audio(waveform, rate=sr))
 
 def get_curriculum_file_lists(cache_dir="../data", split='train'):
-    """
-    Returns sorted file lists for stage1 and stage2 (mixture/target).
-    
-    Args:
-        cache_dir: Root data directory
-        split: 'train', 'val', or 'test' (default: 'train' for backward compatibility)
-        
-    Returns:
-        Tuple of (mix_files_stage1, tgt_files_stage1, mix_files_stage2, tgt_files_stage2)
-    """
     data_root = Path(cache_dir)
     
     s1_mix_path = data_root / "stage1" / split / "mixture"
@@ -1033,10 +1203,10 @@ def load_musdb_stems(track_folder, sr=22050):
         stems[stem] = audio
     return stems
 
-def process_stage1() -> None:
-    print(f"\n{'='*70}\nSTAGE 1: vocals+other → other (single stem)\n{'='*70}")
+def _process_stage_helper(stage_name, stage_desc, stage_dir, mix_fn, target_fn):
+    print(f"\n{'='*70}\n{stage_desc}\n{'='*70}")
     for split, folder in MUSDB_SPLITS.items():
-        out_dir = DATA_DIR / 'stage1' / split
+        out_dir = DATA_DIR / stage_dir / split
         mix_dir = out_dir / 'mixture'
         tgt_dir = out_dir / 'target'
         if mix_dir.exists() and tgt_dir.exists() and any(mix_dir.glob('*.npy')) and any(tgt_dir.glob('*.npy')):
@@ -1047,11 +1217,9 @@ def process_stage1() -> None:
         tgt_dir.mkdir(parents=True, exist_ok=True)
         for track_folder in folder.iterdir():
             stems = load_musdb_stems(track_folder, sr=SAMPLE_RATE)
-            vocals = stems['vocals']
-            other = stems['other']
-            mix = vocals + other
-            target = other
-            total_len: int = min(len(mix), len(target))
+            mix = mix_fn(stems)
+            target = target_fn(stems)
+            total_len = min(len(mix), len(target))
             step = int((CHUNK_DURATION - CHUNK_OVERLAP) * SAMPLE_RATE)
             chunk_len = int(CHUNK_DURATION * SAMPLE_RATE)
             for i, start in enumerate(range(0, total_len - chunk_len + 1, step)):
@@ -1061,48 +1229,25 @@ def process_stage1() -> None:
                 np.save(tgt_dir / f"{track_folder.name}_chunk{i}.npy", tgt_chunk)
         print(f"{split} complete: {len(list(mix_dir.glob('*.npy')))} chunks")
 
-def process_stage2() -> None:
-    print(f"\n{'='*70}\nSTAGE 2: all 4 stems → accompaniment (3 stems)\n{'='*70}")
-    for split, folder in MUSDB_SPLITS.items():
-        out_dir = DATA_DIR / 'stage2' / split
-        mix_dir = out_dir / 'mixture'
-        tgt_dir = out_dir / 'target'
-        if mix_dir.exists() and tgt_dir.exists() and any(mix_dir.glob('*.npy')) and any(tgt_dir.glob('*.npy')):
-            print(f"{split}: already exists, skipping...")
-            continue
-        print(f"Processing {split} ({folder})...")
-        mix_dir.mkdir(parents=True, exist_ok=True)
-        tgt_dir.mkdir(parents=True, exist_ok=True)
-        for track_folder in folder.iterdir():
-            stems = load_musdb_stems(track_folder, sr=SAMPLE_RATE)
-            vocals = stems['vocals']
-            drums = stems['drums']
-            bass = stems['bass']
-            other = stems['other']
-            mix = vocals + drums + bass + other
-            target = drums + bass + other
-            total_len: int = min(len(mix), len(target))
-            step = int((CHUNK_DURATION - CHUNK_OVERLAP) * SAMPLE_RATE)
-            chunk_len = int(CHUNK_DURATION * SAMPLE_RATE)
-            for i, start in enumerate(range(0, total_len - chunk_len + 1, step)):
-                mix_chunk = mix[start:start+chunk_len]
-                tgt_chunk = target[start:start+chunk_len]
-                np.save(mix_dir / f"{track_folder.name}_chunk{i}.npy", mix_chunk)
-                np.save(tgt_dir / f"{track_folder.name}_chunk{i}.npy", tgt_chunk)
-        print(f"{split} complete: {len(list(mix_dir.glob('*.npy')))} chunks")
+def process_stage1():
+    _process_stage_helper(
+        'stage1',
+        'STAGE 1: vocals+other → other (single stem)',
+        'stage1',
+        lambda s: s['vocals'] + s['other'],
+        lambda s: s['other']
+    )
 
-def process_vocals() -> None:
-    """
-    Extracts clean vocal stems from MUSDB18 for source separation training.
-    Used as clean target vocals when training models to separate vocals from mixtures.
-    
-    Output structure:
-        data/vocals/train/*.npy  (chunks named: SingerName_chunk0.npy, etc.)
-        data/vocals/val/*.npy
-        data/vocals/test/*.npy
-    
-    Each chunk is named with the singer/track name for organization.
-    """
+def process_stage2():
+    _process_stage_helper(
+        'stage2',
+        'STAGE 2: all 4 stems → accompaniment (3 stems)',
+        'stage2',
+        lambda s: s['vocals'] + s['drums'] + s['bass'] + s['other'],
+        lambda s: s['drums'] + s['bass'] + s['other']
+    )
+
+def process_vocals():
     print(f"\n{'='*70}\nVOCALS PREPROCESSING: Clean vocal stems for source separation\n{'='*70}")
     
     for split, folder in MUSDB_SPLITS.items():
@@ -1300,7 +1445,7 @@ def plot_spectrograms_and_play_audio(mixture, prediction, ground_truth, sr=22050
         display(Audio(truth_norm, rate=sr))
 
 def initialize_model_a_lstm(device='cuda'):
-    """Initialize Model A (LSTM) with full configuration."""
+    """Initialize Model (LSTM) with full configuration."""
     from models import models
     
     processor = AudioProcessor(device=device)
@@ -1311,13 +1456,13 @@ def initialize_model_a_lstm(device='cuda'):
         dropout=0.3,
         bidirectional=True
     ).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=get_training_config_lstm()['learning_rate'])
+    optimizer = torch.optim.Adam(model.parameters(), lr=get_training_config('lstm')['learning_rate'])
     loss_fn = nn.MSELoss()
     
     return model, processor, optimizer, loss_fn
 
 def initialize_model_a_unet(device='cuda'):
-    """Initialize Model A (U-Net) with default configuration."""
+    """Initialize Model (U-Net) with default configuration."""
     from models import models
     
     processor = AudioProcessor(device=device)
@@ -1329,7 +1474,7 @@ def initialize_model_a_unet(device='cuda'):
         batchnorm=True,
         dropout=0.1
     ).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=get_training_config_unet()['learning_rate'])
+    optimizer = torch.optim.Adam(model.parameters(), lr=get_training_config('unet')['learning_rate'])
     loss_fn = nn.MSELoss()
     
     return model, processor, optimizer, loss_fn
@@ -1390,6 +1535,480 @@ def train_model_stage(
     print(f"Training complete! Best val loss: {min(hist['val_loss']):.6f}")
     return hist
 
+def train_stage1_models(data_dir, checkpoint_dir, device, chunk_duration=8.0, skip_training=False, lstm_batch_size=128, unet_batch_size=32):
+    """
+    Train both LSTM and U-Net models for Stage 1 with automatic memory management.
+    """
+    import gc
+    
+    print(f"\n{'='*70}")
+    print('STAGE 1 TRAINING: 2 → 1')
+    print(f"{'='*70}\n")
+    
+    ckpt_lstm_s1 = checkpoint_dir / f'model_a_lstm_stage1_{chunk_duration:.0f}s.pth'
+    ckpt_unet_s1 = checkpoint_dir / f'model_a_unet_stage1_{chunk_duration:.0f}s.pth'
+    
+    skip_lstm = skip_training or ckpt_lstm_s1.exists()
+    skip_unet = skip_training or ckpt_unet_s1.exists()
+    
+    # Train LSTM
+    print('Model (LSTM) - Stage 1')
+    print('-' * 70)
+    if ckpt_lstm_s1.exists():
+        print(f"LSTM Stage 1 checkpoint found: {ckpt_lstm_s1.name}")
+    
+    lstm_config = get_training_config('lstm')
+    lstm_config['batch_size'] = lstm_batch_size
+    
+    model_lstm, processor_lstm, optimizer_lstm, loss_fn_lstm = initialize_model_a_lstm(device)
+    hist_lstm_s1 = train_model_stage(
+        model=model_lstm,
+        processor=processor_lstm,
+        optimizer=optimizer_lstm,
+        loss_fn=loss_fn_lstm,
+        training_data_dir=data_dir,
+        stage='stage1',
+        ckpt_path=ckpt_lstm_s1,
+        device=device,
+        train_config=lstm_config,
+        skip_training=skip_lstm
+    )
+    
+    # Memory cleanup after LSTM
+    model_lstm.to('cpu')
+    del optimizer_lstm
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    gc.collect()
+    
+    # Train U-Net
+    print('\nModel (U-Net) - Stage 1')
+    print('-' * 70)
+    if ckpt_unet_s1.exists():
+        print(f"U-Net Stage 1 checkpoint found: {ckpt_unet_s1.name}")
+    
+    unet_config = get_training_config('unet')
+    unet_config['batch_size'] = unet_batch_size
+    
+    model_unet, processor_unet, optimizer_unet, loss_fn_unet = initialize_model_a_unet(device)
+    hist_unet_s1 = train_model_stage(
+        model=model_unet,
+        processor=processor_unet,
+        optimizer=optimizer_unet,
+        loss_fn=loss_fn_unet,
+        training_data_dir=data_dir,
+        stage='stage1',
+        ckpt_path=ckpt_unet_s1,
+        device=device,
+        train_config=unet_config,
+        skip_training=skip_unet
+    )
+    
+    return {
+        'model_lstm': model_lstm,
+        'processor_lstm': processor_lstm,
+        'loss_fn_lstm': loss_fn_lstm,
+        'model_unet': model_unet,
+        'processor_unet': processor_unet,
+        'loss_fn_unet': loss_fn_unet,
+        'hist_lstm_s1': hist_lstm_s1,
+        'hist_unet_s1': hist_unet_s1,
+        'ckpt_lstm_s1': ckpt_lstm_s1,
+        'ckpt_unet_s1': ckpt_unet_s1
+    }
+
+def train_stage2_models(data_dir, checkpoint_dir, device, chunk_duration=8.0, skip_training=False, 
+                        lstm_batch_size=128, unet_batch_size=32, stage2_enabled=True):
+    """
+    Train both LSTM and U-Net models for Stage 2, loading weights from Stage 1.
+    """
+    import gc
+    
+    ckpt_lstm_s1 = checkpoint_dir / f'model_a_lstm_stage1_{chunk_duration:.0f}s.pth'
+    ckpt_unet_s1 = checkpoint_dir / f'model_a_unet_stage1_{chunk_duration:.0f}s.pth'
+    ckpt_lstm_s2 = checkpoint_dir / f'model_a_lstm_stage2_{chunk_duration:.0f}s.pth'
+    ckpt_unet_s2 = checkpoint_dir / f'model_a_unet_stage2_{chunk_duration:.0f}s.pth'
+    
+    hist_lstm_s2 = {}
+    hist_unet_s2 = {}
+    
+    if not stage2_enabled:
+        print("Stage 2 training disabled (STAGE2_ENABLED = False)")
+        return {
+            'hist_lstm_s2': hist_lstm_s2,
+            'hist_unet_s2': hist_unet_s2
+        }
+    
+    print(f"\n{'='*70}")
+    print('STAGE 2 TRAINING: 4 → 1')
+    print(f"{'='*70}\n")
+    
+    # Train LSTM Stage 2
+    print('1. Model A (LSTM) - Stage 2')
+    print('-' * 70)
+    
+    lstm_config = get_training_config('lstm')
+    lstm_config['batch_size'] = lstm_batch_size
+    
+    model_lstm, processor_lstm, optimizer_lstm, loss_fn_lstm = initialize_model_a_lstm(device)
+    
+    if ckpt_lstm_s1.exists():
+        print(f"Loading Stage 2 weights from: {ckpt_lstm_s1.name}")
+        checkpoint = torch.load(ckpt_lstm_s1, map_location=device)
+        model_lstm.load_state_dict(checkpoint['model_state_dict'])
+        print(f"LSTM Stage 2 weights loaded successfully.")
+    else:
+        print("LSTM Stage 2 checkpoint NOT found. Starting from scratch (not ideal).")
+    
+    hist_lstm_s2 = train_model_stage(
+        model=model_lstm,
+        processor=processor_lstm,
+        optimizer=optimizer_lstm,
+        loss_fn=loss_fn_lstm,
+        training_data_dir=data_dir,
+        stage='stage2',
+        ckpt_path=ckpt_lstm_s2,
+        device=device,
+        train_config=lstm_config,
+        skip_training=skip_training
+    )
+    
+    # Memory cleanup after LSTM
+    model_lstm.to('cpu')
+    del optimizer_lstm
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    gc.collect()
+    
+    # Train U-Net Stage 2
+    print('\n2. Model A (U-Net) - Stage 2')
+    print('-' * 70)
+    
+    unet_config = get_training_config('unet')
+    unet_config['batch_size'] = unet_batch_size
+    
+    model_unet, processor_unet, optimizer_unet, loss_fn_unet = initialize_model_a_unet(device)
+    
+    if ckpt_unet_s1.exists():
+        print(f"Loading Stage 2 weights from: {ckpt_unet_s1.name}")
+        checkpoint = torch.load(ckpt_unet_s1, map_location=device)
+        try:
+            model_unet.load_state_dict(checkpoint['model_state_dict'])
+            print(f"U-Net Stage 2 weights loaded successfully.")
+        except RuntimeError as e:
+            print(f"CRITICAL ERROR loading weights: {e}")
+            print("   (This usually means the model structure in Stage 2 doesn't match Stage 1)")
+            raise e
+    else:
+        print("U-Net Stage 2 checkpoint NOT found. Starting from scratch.")
+    
+    hist_unet_s2 = train_model_stage(
+        model=model_unet,
+        processor=processor_unet,
+        optimizer=optimizer_unet,
+        loss_fn=loss_fn_unet,
+        training_data_dir=data_dir,
+        stage='stage2',
+        ckpt_path=ckpt_unet_s2,
+        device=device,
+        train_config=unet_config,
+        skip_training=skip_training
+    )
+    
+    print(f"\n{'='*70}")
+    print("STAGE 2 COMPLETE!")
+    print(f"{'='*70}")
+    
+    return {
+        'model_lstm': model_lstm,
+        'processor_lstm': processor_lstm,
+        'loss_fn_lstm': loss_fn_lstm,
+        'model_unet': model_unet,
+        'processor_unet': processor_unet,
+        'loss_fn_unet': loss_fn_unet,
+        'hist_lstm_s2': hist_lstm_s2,
+        'hist_unet_s2': hist_unet_s2,
+        'ckpt_lstm_s2': ckpt_lstm_s2,
+        'ckpt_unet_s2': ckpt_unet_s2
+    }
+
+def train_unetattention_stage1(data_dir, checkpoint_dir, device, chunk_duration=8.0, 
+                                skip_training=False, batch_size=32, base_filters=32, 
+                                num_layers=4, num_heads=4, learning_rate=None):
+    """
+    Train UNetAttention model for Stage 1 (2 → 1 channels).
+    
+    Args:
+        data_dir: Path to data directory
+        checkpoint_dir: Path to checkpoint directory
+        device: Device to train on ('cuda' or 'cpu')
+        chunk_duration: Duration of audio chunks in seconds
+        skip_training: Whether to skip training if checkpoint exists
+        batch_size: Batch size for training
+        base_filters: Number of base filters for UNetAttention
+        num_layers: Number of layers in UNetAttention
+        num_heads: Number of attention heads
+        learning_rate: Learning rate (uses config default if None)
+    
+    Returns:
+        Dictionary with model, processor, loss_fn, history, and checkpoint path
+    """
+    from models import models as ma
+    
+    print(f"\n{'='*70}")
+    print('STAGE 1 TRAINING: UNetAttention (2 → 1)')
+    print(f"{'='*70}\n")
+    
+    ckpt_attn_s1 = checkpoint_dir / f'model_unetattention_stage1_{chunk_duration:.0f}s.pth'
+    
+    if ckpt_attn_s1.exists():
+        print(f"UNetAttention Stage 1 checkpoint found: {ckpt_attn_s1.name}")
+    
+    if skip_training and ckpt_attn_s1.exists():
+        print("Skipping training (skip_training=True and checkpoint exists)")
+        
+        # Load model from checkpoint
+        print(f"Initializing UNetAttention ({base_filters} filters, {num_layers} layers, {num_heads} heads)...")
+        model_attn_s1 = ma.UNetAttention(
+            in_channels=1,
+            out_channels=1,
+            base_filters=base_filters,
+            num_layers=num_layers,
+            num_heads=num_heads,
+            batchnorm=True,
+            dropout=0.1
+        ).to(device)
+        
+        checkpoint = torch.load(ckpt_attn_s1, map_location=device)
+        model_attn_s1.load_state_dict(checkpoint['model_state_dict'])
+        hist_attn_s1 = checkpoint.get('history', {})
+        
+        processor_attn = AudioProcessor(device=device)
+        loss_fn_attn = nn.MSELoss()
+        
+        print("Model loaded from checkpoint")
+    else:
+        # Get training config
+        attn_config = get_training_config('unet')
+        attn_config['batch_size'] = batch_size
+        
+        if learning_rate is not None:
+            attn_config['learning_rate'] = learning_rate
+        
+        # Initialize model
+        print(f"Initializing UNetAttention ({base_filters} filters, {num_layers} layers, {num_heads} heads)...")
+        model_attn_s1 = ma.UNetAttention(
+            in_channels=1,
+            out_channels=1,
+            base_filters=base_filters,
+            num_layers=num_layers,
+            num_heads=num_heads,
+            batchnorm=True,
+            dropout=0.1
+        ).to(device)
+        
+        processor_attn = AudioProcessor(device=device)
+        optimizer_attn = torch.optim.Adam(model_attn_s1.parameters(), lr=attn_config['learning_rate'])
+        loss_fn_attn = nn.MSELoss()
+        
+        # Train model
+        hist_attn_s1 = train_model_stage(
+            model=model_attn_s1,
+            processor=processor_attn,
+            optimizer=optimizer_attn,
+            loss_fn=loss_fn_attn,
+            training_data_dir=data_dir,
+            stage='stage1',
+            ckpt_path=ckpt_attn_s1,
+            device=device,
+            train_config=attn_config,
+            skip_training=False
+        )
+    
+    return {
+        'model_attn_s1': model_attn_s1,
+        'processor_attn': processor_attn,
+        'loss_fn_attn': loss_fn_attn,
+        'hist_attn_s1': hist_attn_s1,
+        'ckpt_attn_s1': ckpt_attn_s1
+    }
+
+def compare_unet_vs_unetattention_stage1(checkpoint_dir, chunk_duration, hist_unet_s1=None, hist_attn_s1=None):
+    """
+    Compare and plot training curves for U-Net vs UNetAttention Stage 1.
+    
+    Args:
+        checkpoint_dir: Path to checkpoint directory
+        chunk_duration: Duration of audio chunks in seconds
+        hist_unet_s1: Training history for U-Net (loaded from checkpoint if None)
+        hist_attn_s1: Training history for UNetAttention (loaded from checkpoint if None)
+    """
+    # Load training history if not provided
+    if not hist_unet_s1 or 'train_loss' not in hist_unet_s1:
+        ckpt_unet_s1 = checkpoint_dir / f"model_a_unet_stage1_{chunk_duration:.0f}s.pth"
+        hist_unet_s1 = load_training_history_from_checkpoint(ckpt_unet_s1)
+    
+    if not hist_attn_s1 or 'train_loss' not in hist_attn_s1:
+        ckpt_attn_s1 = checkpoint_dir / f"model_unetattention_stage1_{chunk_duration:.0f}s.pth"
+        hist_attn_s1 = load_training_history_from_checkpoint(ckpt_attn_s1)
+    
+    # Load test results
+    test_results_ckpt_unet_s1 = checkpoint_dir / f"test_results_unet_stage1_{chunk_duration:.0f}s.pkl"
+    test_results_ckpt_attn_s1 = checkpoint_dir / f"test_results_unetattention_stage1_{chunk_duration:.0f}s.pkl"
+    
+    test_unet_s1 = load_test_results(test_results_ckpt_unet_s1)
+    test_attn_s1 = load_test_results(test_results_ckpt_attn_s1)
+    
+    # Check if we have data to plot
+    if not hist_unet_s1 or not hist_attn_s1:
+        print("Could not plot comparison - missing training history for one or both models.")
+        return
+    
+    # Create comparison plot
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+    
+    # U-Net plot
+    if 'train_loss' in hist_unet_s1:
+        epochs_unet = range(1, len(hist_unet_s1['train_loss']) + 1)
+        ax1.plot(epochs_unet, hist_unet_s1['train_loss'], 'o-', label='Train', linewidth=2)
+        ax1.plot(epochs_unet, hist_unet_s1['val_loss'], 's--', label='Val', linewidth=2)
+        
+        if test_unet_s1 and 'mean' in test_unet_s1 and 'std' in test_unet_s1:
+            ax1.fill_between(
+                epochs_unet,
+                test_unet_s1['mean'] - test_unet_s1['std'],
+                test_unet_s1['mean'] + test_unet_s1['std'],
+                alpha=0.2, color='red'
+            )
+            ax1.axhline(
+                test_unet_s1['mean'],
+                color='red', linestyle=':', linewidth=2,
+                label=f"Test (μ={test_unet_s1['mean']:.4f})"
+            )
+    
+    ax1.set_title('Standard U-Net - Stage 1', fontsize=12, fontweight='bold')
+    ax1.set_xlabel('Epoch')
+    ax1.set_ylabel('Loss')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    
+    # UNetAttention plot
+    if 'train_loss' in hist_attn_s1:
+        epochs_attn = range(1, len(hist_attn_s1['train_loss']) + 1)
+        ax2.plot(epochs_attn, hist_attn_s1['train_loss'], 'o-', label='Train', linewidth=2)
+        ax2.plot(epochs_attn, hist_attn_s1['val_loss'], 's--', label='Val', linewidth=2)
+        
+        if test_attn_s1 and 'mean' in test_attn_s1 and 'std' in test_attn_s1:
+            ax2.fill_between(
+                epochs_attn,
+                test_attn_s1['mean'] - test_attn_s1['std'],
+                test_attn_s1['mean'] + test_attn_s1['std'],
+                alpha=0.2, color='red'
+            )
+            ax2.axhline(
+                test_attn_s1['mean'],
+                color='red', linestyle=':', linewidth=2,
+                label=f"Test (μ={test_attn_s1['mean']:.4f})"
+            )
+    
+    ax2.set_title('UNetAttention - Stage 1', fontsize=12, fontweight='bold')
+    ax2.set_xlabel('Epoch')
+    ax2.set_ylabel('Loss')
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+    
+    plt.suptitle('Train/Val/Test Comparison - Stage 1 (U-Net vs UNetAttention)', fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    plt.show()
+
+def compare_unet_vs_unetattention_stage2(checkpoint_dir, chunk_duration, hist_unet_s2=None, hist_attn_s2=None):
+    """
+    Compare and plot training curves for U-Net vs UNetAttention Stage 2.
+    
+    Args:
+        checkpoint_dir: Path to checkpoint directory
+        chunk_duration: Duration of audio chunks in seconds
+        hist_unet_s2: Training history for U-Net (loaded from checkpoint if None)
+        hist_attn_s2: Training history for UNetAttention (loaded from checkpoint if None)
+    """
+    # Load training history if not provided
+    if not hist_unet_s2 or 'train_loss' not in hist_unet_s2:
+        ckpt_unet_s2 = checkpoint_dir / f"model_a_unet_stage2_{chunk_duration:.0f}s.pth"
+        hist_unet_s2 = load_training_history_from_checkpoint(ckpt_unet_s2)
+    
+    if not hist_attn_s2 or 'train_loss' not in hist_attn_s2:
+        ckpt_attn_s2 = checkpoint_dir / f"model_unetattention_stage2_{chunk_duration:.0f}s.pth"
+        hist_attn_s2 = load_training_history_from_checkpoint(ckpt_attn_s2)
+    
+    # Load test results
+    test_results_ckpt_unet_s2 = checkpoint_dir / f"test_results_unet_stage2_{chunk_duration:.0f}s.pkl"
+    test_results_ckpt_attn_s2 = checkpoint_dir / f"test_results_unetattention_stage2_{chunk_duration:.0f}s.pkl"
+    
+    test_unet_s2 = load_test_results(test_results_ckpt_unet_s2)
+    test_attn_s2 = load_test_results(test_results_ckpt_attn_s2)
+    
+    # Check if we have data to plot
+    if not hist_unet_s2 or not hist_attn_s2:
+        print("Could not plot comparison - missing training history for one or both models.")
+        return
+    
+    # Create comparison plot
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+    
+    # U-Net plot
+    if 'train_loss' in hist_unet_s2:
+        epochs_unet = range(1, len(hist_unet_s2['train_loss']) + 1)
+        ax1.plot(epochs_unet, hist_unet_s2['train_loss'], 'o-', label='Train', linewidth=2)
+        ax1.plot(epochs_unet, hist_unet_s2['val_loss'], 's--', label='Val', linewidth=2)
+        
+        if test_unet_s2 and 'mean' in test_unet_s2 and 'std' in test_unet_s2:
+            ax1.fill_between(
+                epochs_unet,
+                test_unet_s2['mean'] - test_unet_s2['std'],
+                test_unet_s2['mean'] + test_unet_s2['std'],
+                alpha=0.2, color='red'
+            )
+            ax1.axhline(
+                test_unet_s2['mean'],
+                color='red', linestyle=':', linewidth=2,
+                label=f"Test (μ={test_unet_s2['mean']:.4f})"
+            )
+    
+    ax1.set_title('Standard U-Net - Stage 2', fontsize=12, fontweight='bold')
+    ax1.set_xlabel('Epoch')
+    ax1.set_ylabel('Loss')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    
+    # UNetAttention plot
+    if 'train_loss' in hist_attn_s2:
+        epochs_attn = range(1, len(hist_attn_s2['train_loss']) + 1)
+        ax2.plot(epochs_attn, hist_attn_s2['train_loss'], 'o-', label='Train', linewidth=2)
+        ax2.plot(epochs_attn, hist_attn_s2['val_loss'], 's--', label='Val', linewidth=2)
+        
+        if test_attn_s2 and 'mean' in test_attn_s2 and 'std' in test_attn_s2:
+            ax2.fill_between(
+                epochs_attn,
+                test_attn_s2['mean'] - test_attn_s2['std'],
+                test_attn_s2['mean'] + test_attn_s2['std'],
+                alpha=0.2, color='red'
+            )
+            ax2.axhline(
+                test_attn_s2['mean'],
+                color='red', linestyle=':', linewidth=2,
+                label=f"Test (μ={test_attn_s2['mean']:.4f})"
+            )
+    
+    ax2.set_title('UNetAttention - Stage 2', fontsize=12, fontweight='bold')
+    ax2.set_xlabel('Epoch')
+    ax2.set_ylabel('Loss')
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+    
+    plt.suptitle('Train/Val/Test Comparison - Stage 2 (U-Net vs UNetAttention)', fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    plt.show()
+
 def load_training_history_from_checkpoint(ckpt_path):
     """Load training history from checkpoint or epoch files."""
     import re
@@ -1420,7 +2039,495 @@ def load_training_history_from_checkpoint(ckpt_path):
     
     return {}
 
-def plot_model_comparison(hist_lstm, hist_unet, title="Model A Comparison: LSTM vs U-Net"):
+def evaluate_stage1_models(model_lstm, processor_lstm, loss_fn_lstm, model_unet, processor_unet, loss_fn_unet, 
+                           ckpt_lstm_s1, ckpt_unet_s1, data_dir, checkpoint_dir, chunk_duration, device):
+    """
+    Evaluate both Stage 1 models on test set, loading from cache if available.
+    """
+    test_results_ckpt_lstm = checkpoint_dir / f'test_results_lstm_stage1_{chunk_duration:.0f}s.pkl'
+    test_results_ckpt_unet = checkpoint_dir / f'test_results_unet_stage1_{chunk_duration:.0f}s.pkl'
+    
+    test_lstm_s1 = load_test_results(test_results_ckpt_lstm)
+    test_unet_s1 = load_test_results(test_results_ckpt_unet)
+    
+    if test_lstm_s1 and test_unet_s1:
+        print(f"Loaded cached test results from checkpoints")
+        print(f"   LSTM: {test_results_ckpt_lstm.name}")
+        print(f"   U-Net: {test_results_ckpt_unet.name}")
+    else:
+        print("Running Stage 1 test evaluation (no cached results found)...\n")
+        print("STAGE 1 TEST GENERALIZATION\n")
+        
+        model_lstm.to(device)
+        model_unet.to(device)
+        
+        if ckpt_lstm_s1.exists():
+            print(f"Loading LSTM Stage 1 weights for evaluation from: {ckpt_lstm_s1.name}")
+            checkpoint = torch.load(ckpt_lstm_s1, map_location=device, weights_only=False)
+            model_lstm.load_state_dict(checkpoint['model_state_dict'])
+            print(f"LSTM weights loaded (trained for {checkpoint.get('epoch', '?')} epochs)")
+        else:
+            print("No LSTM checkpoint found - evaluating untrained model!")
+        
+        if ckpt_unet_s1.exists():
+            print(f"Loading U-Net Stage 1 weights for evaluation from: {ckpt_unet_s1.name}")
+            checkpoint = torch.load(ckpt_unet_s1, map_location=device, weights_only=False)
+            model_unet.load_state_dict(checkpoint['model_state_dict'])
+            print(f"U-Net weights loaded (trained for {checkpoint.get('epoch', '?')} epochs)")
+        else:
+            print("No U-Net checkpoint found - evaluating untrained model!")
+        
+        print("\n" + "="*70)
+        print("EVALUATING LSTM MODEL")
+        print("="*70)
+        test_lstm_s1 = evaluate_test_set(model_lstm, processor_lstm, data_dir,
+                                        'stage1', loss_fn_lstm, device)
+        
+        print("\n" + "="*70)
+        print("EVALUATING U-NET MODEL")
+        print("="*70)
+        test_unet_s1 = evaluate_test_set(model_unet, processor_unet, data_dir,
+                                        'stage1', loss_fn_unet, device)
+        
+        save_test_results(test_lstm_s1, test_results_ckpt_lstm)
+        save_test_results(test_unet_s1, test_results_ckpt_unet)
+    
+    return test_lstm_s1, test_unet_s1
+
+def plot_stage1_training_curves(hist_lstm_s1, hist_unet_s1, test_lstm_s1, test_unet_s1, checkpoint_dir, chunk_duration):
+    """
+    Plot training/validation/test comparison curves for Stage 1 models.
+    """
+    # Load training history if not provided
+    if not hist_lstm_s1:
+        ckpt_lstm = checkpoint_dir / f"model_a_lstm_stage1_{chunk_duration:.0f}s.pth"
+        hist_lstm_s1 = load_training_history_from_checkpoint(ckpt_lstm)
+    
+    if not hist_unet_s1:
+        ckpt_unet = checkpoint_dir / f"model_a_unet_stage1_{chunk_duration:.0f}s.pth"
+        hist_unet_s1 = load_training_history_from_checkpoint(ckpt_unet)
+    
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+    
+    # LSTM plot
+    if hist_lstm_s1 and 'train_loss' in hist_lstm_s1:
+        epochs_lstm = range(1, len(hist_lstm_s1['train_loss']) + 1)
+        ax1.plot(epochs_lstm, hist_lstm_s1['train_loss'], 'o-', label='Train', linewidth=2)
+        ax1.plot(epochs_lstm, hist_lstm_s1['val_loss'], 's--', label='Val', linewidth=2)
+        
+        ax1.fill_between(epochs_lstm,
+                         test_lstm_s1['mean'] - test_lstm_s1['std'],
+                         test_lstm_s1['mean'] + test_lstm_s1['std'],
+                         alpha=0.2, color='red')
+    
+    ax1.axhline(test_lstm_s1['mean'], color='red', linestyle=':', linewidth=2, 
+                label=f"Test (μ={test_lstm_s1['mean']:.4f})")
+    ax1.set_title('Model A (LSTM) - Stage 1', fontsize=12, fontweight='bold')
+    ax1.set_xlabel('Epoch')
+    ax1.set_ylabel('Loss')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    
+    # U-Net plot
+    if hist_unet_s1 and 'train_loss' in hist_unet_s1:
+        epochs_unet = range(1, len(hist_unet_s1['train_loss']) + 1)
+        ax2.plot(epochs_unet, hist_unet_s1['train_loss'], 'o-', label='Train', linewidth=2)
+        ax2.plot(epochs_unet, hist_unet_s1['val_loss'], 's--', label='Val', linewidth=2)
+        
+        ax2.fill_between(epochs_unet,
+                         test_unet_s1['mean'] - test_unet_s1['std'],
+                         test_unet_s1['mean'] + test_unet_s1['std'],
+                         alpha=0.2, color='red')
+    
+    ax2.axhline(test_unet_s1['mean'], color='red', linestyle=':', linewidth=2, 
+                label=f"Test (μ={test_unet_s1['mean']:.4f})")
+    ax2.set_title('Model A (U-Net) - Stage 1', fontsize=12, fontweight='bold')
+    ax2.set_xlabel('Epoch')
+    ax2.set_ylabel('Loss')
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+    
+    plt.suptitle('Train/Val/Test Comparison - Stage 1', fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    plt.show()
+
+def evaluate_stage2_models(ckpt_lstm_s2, ckpt_unet_s2, data_dir, checkpoint_dir, chunk_duration, device):
+    """
+    Evaluate both Stage 2 models on test set, loading from cache if available.
+    """
+    from models import models as ma
+    
+    test_results_ckpt_lstm = checkpoint_dir / f'test_results_lstm_stage2_{chunk_duration:.0f}s.pkl'
+    test_results_ckpt_unet = checkpoint_dir / f'test_results_unet_stage2_{chunk_duration:.0f}s.pkl'
+    
+    test_lstm_s2 = load_test_results(test_results_ckpt_lstm)
+    test_unet_s2 = load_test_results(test_results_ckpt_unet)
+    
+    if test_lstm_s2 and test_unet_s2:
+        print(f"Loaded cached test results from checkpoints")
+        print(f"   LSTM: {test_results_ckpt_lstm.name}")
+        print(f"   U-Net: {test_results_ckpt_unet.name}")
+    else:
+        print("Running Stage 2 test evaluation (no cached results found)...\n")
+        print("STAGE 2 TEST GENERALIZATION\n")
+        
+        model_lstm_s2, processor_lstm_s2, _, loss_fn_lstm_s2 = initialize_model_a_lstm(device)
+        
+        model_unet_s2 = ma.TimeFrequencyDomainUNet(
+            in_channels=1,
+            out_channels=1,
+            base_filters=32,
+            num_layers=5,
+            batchnorm=True,
+            dropout=0.1
+        ).to(device)
+        processor_unet_s2 = AudioProcessor(device=device)
+        loss_fn_unet_s2 = torch.nn.MSELoss()
+        
+        if ckpt_lstm_s2.exists():
+            print(f"Loading LSTM Stage 2 weights from: {ckpt_lstm_s2.name}")
+            checkpoint = torch.load(ckpt_lstm_s2, map_location=device, weights_only=False)
+            model_lstm_s2.load_state_dict(checkpoint['model_state_dict'])
+            print(f"LSTM weights loaded (trained for {checkpoint.get('epoch', '?')} epochs)")
+        else:
+            print("No LSTM Stage 2 checkpoint found - evaluating untrained model!")
+        
+        if ckpt_unet_s2.exists():
+            print(f"Loading U-Net Stage 2 weights from: {ckpt_unet_s2.name}")
+            checkpoint = torch.load(ckpt_unet_s2, map_location=device, weights_only=False)
+            model_unet_s2.load_state_dict(checkpoint['model_state_dict'])
+            print(f"U-Net weights loaded (trained for {checkpoint.get('epoch', '?')} epochs)")
+        else:
+            print("No U-Net Stage 2 checkpoint found - evaluating untrained model!")
+        
+        print("\n" + "="*70)
+        print("EVALUATING LSTM MODEL (STAGE 2)")
+        print("="*70)
+        test_lstm_s2 = evaluate_test_set(model_lstm_s2, processor_lstm_s2, data_dir,
+                                        'stage2', loss_fn_lstm_s2, device)
+        
+        print("\n" + "="*70)
+        print("EVALUATING U-NET MODEL (STAGE 2)")
+        print("="*70)
+        test_unet_s2 = evaluate_test_set(model_unet_s2, processor_unet_s2, data_dir,
+                                        'stage2', loss_fn_unet_s2, device)
+        
+        save_test_results(test_lstm_s2, test_results_ckpt_lstm)
+        save_test_results(test_unet_s2, test_results_ckpt_unet)
+    
+    return test_lstm_s2, test_unet_s2
+
+def plot_stage2_training_curves(hist_lstm_s2, hist_unet_s2, test_lstm_s2, test_unet_s2, checkpoint_dir, chunk_duration, stage2_enabled=True):
+    """
+    Plot training/validation/test comparison curves for Stage 2 models.
+    """
+    if not stage2_enabled:
+        print("Stage 2 plotting skipped (STAGE2_ENABLED = False)")
+        return
+    
+    # Load training history if not provided
+    if not hist_lstm_s2:
+        ckpt_lstm = checkpoint_dir / f"model_a_lstm_stage2_{chunk_duration:.0f}s.pth"
+        hist_lstm_s2 = load_training_history_from_checkpoint(ckpt_lstm)
+    
+    if not hist_unet_s2:
+        ckpt_unet = checkpoint_dir / f"model_a_unet_stage2_{chunk_duration:.0f}s.pth"
+        hist_unet_s2 = load_training_history_from_checkpoint(ckpt_unet)
+    
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
+    
+    # LSTM plot
+    if hist_lstm_s2 and 'train_loss' in hist_lstm_s2:
+        epochs_lstm = range(1, len(hist_lstm_s2['train_loss']) + 1)
+        ax1.plot(epochs_lstm, hist_lstm_s2['train_loss'], 'o-', label='Train', linewidth=2)
+        ax1.plot(epochs_lstm, hist_lstm_s2['val_loss'], 's--', label='Val', linewidth=2)
+        
+        ax1.fill_between(epochs_lstm,
+                         test_lstm_s2['mean'] - test_lstm_s2['std'],
+                         test_lstm_s2['mean'] + test_lstm_s2['std'],
+                         alpha=0.2, color='red')
+    
+    ax1.axhline(test_lstm_s2['mean'], color='red', linestyle=':', linewidth=2, 
+                label=f"Test (μ={test_lstm_s2['mean']:.4f})")
+    ax1.set_title('Model A (LSTM) - Stage 2', fontsize=12, fontweight='bold')
+    ax1.set_xlabel('Epoch')
+    ax1.set_ylabel('Loss')
+    ax1.legend()
+    ax1.grid(True, alpha=0.3)
+    
+    # U-Net plot
+    if hist_unet_s2 and 'train_loss' in hist_unet_s2:
+        epochs_unet = range(1, len(hist_unet_s2['train_loss']) + 1)
+        ax2.plot(epochs_unet, hist_unet_s2['train_loss'], 'o-', label='Train', linewidth=2)
+        ax2.plot(epochs_unet, hist_unet_s2['val_loss'], 's--', label='Val', linewidth=2)
+        
+        ax2.fill_between(epochs_unet,
+                         test_unet_s2['mean'] - test_unet_s2['std'],
+                         test_unet_s2['mean'] + test_unet_s2['std'],
+                         alpha=0.2, color='red')
+    
+    ax2.axhline(test_unet_s2['mean'], color='red', linestyle=':', linewidth=2, 
+                label=f"Test (μ={test_unet_s2['mean']:.4f})")
+    ax2.set_title('Model A (U-Net) - Stage 2', fontsize=12, fontweight='bold')
+    ax2.set_xlabel('Epoch')
+    ax2.set_ylabel('Loss')
+    ax2.legend()
+    ax2.grid(True, alpha=0.3)
+    
+    plt.suptitle('Train/Val/Test Comparison - Stage 2 (Full Mix -> Vocals)', fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    plt.show()
+
+def load_and_stitch_test_chunks(data_dir, stage='stage1', sr=22050, duration=120.0, hop_length=4.0, auto_select=False):
+    """
+    Load test chunks, optionally select a song, and stitch them together.
+    """
+    test_base = data_dir / stage / 'test'
+    print(f"\nSearching for {stage.upper()} test data at: {test_base}")
+    
+    if (test_base / 'mixture').exists():
+        mix_dir = test_base / 'mixture'
+        print(f"Found subdirectories: mixture/ and target/")
+    else:
+        print(f"ERROR: {stage.upper()} Test directory not found!")
+        raise FileNotFoundError(f"Test data directory not found: {test_base}")
+    
+    all_mix_files = sorted(list(mix_dir.glob('*.npy')))
+    if len(all_mix_files) == 0:
+        raise FileNotFoundError("No .npy files found")
+    
+    # Group chunks by song
+    songs = {}
+    for f in all_mix_files:
+        name = f.stem
+        if '_chunk' in name:
+            parts = name.rsplit('_chunk', 1)
+            if len(parts) == 2 and parts[1].isdigit():
+                song_name = parts[0]
+                idx = int(parts[1])
+                if song_name not in songs: songs[song_name] = {}
+                songs[song_name][idx] = f
+        else:
+            parts = name.split('_')
+            if len(parts) >= 2 and parts[-1].isdigit():
+                idx = int(parts[-1])
+                song_name = '_'.join(parts[:-1])
+                if song_name not in songs: songs[song_name] = {}
+                songs[song_name][idx] = f
+    
+    song_list = sorted(songs.keys())
+    
+    # Song selection
+    if len(song_list) == 1 or auto_select:
+        selected = song_list[0]
+        print(f"\nAuto-selected: {selected}")
+    else:
+        print(f"\nSelect a song [0-{len(song_list)-1}] or press Enter for default (0):")
+        try:
+            choice = input("Choice: ").strip()
+            idx = int(choice) if choice else 0
+        except:
+            idx = 0
+        selected = song_list[idx]
+        print(f"Selected: {selected}")
+    
+    chunks = songs[selected]
+    
+    # Stitch chunks
+    print(f"Stitching chunks...")
+    hop_samples = int(hop_length * sr)
+    target_samples = int(duration * sr)
+    mix_wav = np.zeros(target_samples, dtype=np.float32)
+    tgt_wav = np.zeros(target_samples, dtype=np.float32)
+    weights = np.zeros(target_samples, dtype=np.float32)
+    has_target = True
+    
+    for i in sorted(chunks.keys()):
+        pos = i * hop_samples
+        if pos >= target_samples: break
+        
+        mix_chunk = np.load(chunks[i])
+        tgt_file = chunks[i].name.replace('mix_', 'tgt_')
+        tgt_path = test_base / 'target' / tgt_file
+        
+        if tgt_path.exists():
+            tgt_chunk = np.load(tgt_path)
+        else:
+            tgt_chunk = np.zeros_like(mix_chunk)
+            has_target = False
+        
+        valid_len = min(len(mix_chunk), target_samples - pos)
+        window = np.hanning(len(mix_chunk))[:valid_len]
+        
+        mix_wav[pos:pos+valid_len] += mix_chunk[:valid_len] * window
+        tgt_wav[pos:pos+valid_len] += tgt_chunk[:valid_len] * window
+        weights[pos:pos+valid_len] += window
+    
+    mix_wav = np.divide(mix_wav, weights, where=weights > 0)
+    tgt_wav = np.divide(tgt_wav, weights, where=weights > 0)
+    
+    return mix_wav, tgt_wav, has_target, selected
+
+def evaluate_and_visualize_stage1(model_lstm, processor_lstm, model_unet, processor_unet, 
+                                   mix_wav, tgt_wav, has_target, selected_song, 
+                                   sr=22050, chunk_len=8.0, device='cuda'):
+    """
+    Run inference on both Stage 1 models and create visualization with spectrograms and audio playback.
+    """
+    from IPython.display import Audio, display
+    
+    model_lstm = model_lstm.to(device)
+    model_unet = model_unet.to(device)
+    model_lstm.eval()
+    model_unet.eval()
+    
+    print("\nRunning Stage 1 inference...")
+    est_lstm_s1 = sliding_window_inference(model_lstm, processor_lstm, mix_wav, chunk_len=chunk_len, sr=sr, device=device)
+    est_unet_s1 = sliding_window_inference(model_unet, processor_unet, mix_wav, chunk_len=chunk_len, sr=sr, device=device)
+    
+    print(f"\n{'='*70}\nSTAGE 1 RESULTS\n{'='*70}")
+    
+    # Create visualization
+    fig, axes = plt.subplots(3, 2, figsize=(15, 12))
+    
+    axes[0,0].imshow(to_spec(mix_wav, processor_lstm), aspect='auto', origin='lower', cmap='viridis')
+    axes[0,0].set_title("Input: Simplified Mixture (Vocals+Other)", fontweight='bold')
+    
+    if has_target:
+        axes[0,1].imshow(to_spec(tgt_wav, processor_lstm), aspect='auto', origin='lower', cmap='viridis')
+        axes[0,1].set_title("Ground Truth: Other", fontweight='bold')
+    else:
+        axes[0,1].text(0.5, 0.5, "Target Not Available", ha='center', va='center', transform=axes[0,1].transAxes)
+    
+    # LSTM results
+    spec_tgt_lstm = to_spec(tgt_wav, processor_lstm)
+    spec_pred_lstm = to_spec(est_lstm_s1, processor_lstm)
+    min_len = min(spec_tgt_lstm.shape[1], spec_pred_lstm.shape[1])
+    err_lstm = np.abs(spec_pred_lstm[:, :min_len] - spec_tgt_lstm[:, :min_len])
+    
+    axes[1,0].imshow(err_lstm, aspect='auto', origin='lower', cmap='magma')
+    axes[1,0].set_title("LSTM Error Map (|Pred - Tgt|)", fontweight='bold')
+    
+    axes[1,1].imshow(spec_pred_lstm, aspect='auto', origin='lower', cmap='viridis')
+    axes[1,1].set_title("LSTM Prediction (Stage 1)", fontweight='bold')
+    
+    # U-Net results
+    spec_tgt_unet = to_spec(tgt_wav, processor_unet)
+    spec_pred_unet = to_spec(est_unet_s1, processor_unet)
+    min_len_u = min(spec_tgt_unet.shape[1], spec_pred_unet.shape[1])
+    err_unet = np.abs(spec_pred_unet[:, :min_len_u] - spec_tgt_unet[:, :min_len_u])
+    
+    axes[2,0].imshow(err_unet, aspect='auto', origin='lower', cmap='magma')
+    axes[2,0].set_title("U-Net Error Map (|Pred - Tgt|)", fontweight='bold')
+    
+    axes[2,1].imshow(spec_pred_unet, aspect='auto', origin='lower', cmap='viridis')
+    axes[2,1].set_title("U-Net Prediction (Stage 1)", fontweight='bold')
+    
+    for ax in axes.flatten():
+        ax.set_xlabel("Time")
+        ax.set_ylabel("Frequency")
+    
+    plt.suptitle(f"Stage 1 Evaluation: {selected_song}", fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    plt.show()
+    
+    # Audio playback
+    print("\nAudio Playback:")
+    print("Input (Mix):")
+    display(Audio(mix_wav, rate=sr))
+    
+    print("\nGround Truth (Target):")
+    display(Audio(tgt_wav, rate=sr))
+    
+    print("\nLSTM Prediction:")
+    display(Audio(est_lstm_s1, rate=sr))
+    
+    print("\nU-Net Prediction:")
+    display(Audio(est_unet_s1, rate=sr))
+    
+    return est_lstm_s1, est_unet_s1
+
+def evaluate_and_visualize_stage2(model_lstm, processor_lstm, model_unet, processor_unet, 
+                                   mix_wav, tgt_wav, has_target, selected_song, 
+                                   sr=22050, chunk_len=8.0, device='cuda'):
+    """
+    Run inference on both Stage 2 models and create visualization with spectrograms and audio playback.
+    """
+    from IPython.display import Audio, display
+    
+    model_lstm = model_lstm.to(device)
+    model_unet = model_unet.to(device)
+    model_lstm.eval()
+    model_unet.eval()
+    
+    # Run inference
+    print("\nRunning Stage 2 inference...")
+    est_lstm_s2 = sliding_window_inference(model_lstm, processor_lstm, mix_wav, chunk_len=chunk_len, sr=sr, device=device)
+    est_unet_s2 = sliding_window_inference(model_unet, processor_unet, mix_wav, chunk_len=chunk_len, sr=sr, device=device)
+    
+    print(f"\n{'='*70}\nSTAGE 2 RESULTS\n{'='*70}")
+    
+    # Create visualization
+    fig, axes = plt.subplots(3, 2, figsize=(15, 12))
+    
+    axes[0,0].imshow(to_spec(mix_wav, processor_lstm), aspect='auto', origin='lower', cmap='viridis')
+    axes[0,0].set_title("Input: Full Band Mixture", fontweight='bold')
+    
+    if has_target:
+        axes[0,1].imshow(to_spec(tgt_wav, processor_lstm), aspect='auto', origin='lower', cmap='viridis')
+        axes[0,1].set_title("Ground Truth: Vocals", fontweight='bold')
+    else:
+        axes[0,1].text(0.5, 0.5, "Target Not Available", ha='center', va='center', transform=axes[0,1].transAxes)
+    
+    # LSTM results
+    spec_tgt_lstm = to_spec(tgt_wav, processor_lstm)
+    spec_pred_lstm = to_spec(est_lstm_s2, processor_lstm)
+    min_len = min(spec_tgt_lstm.shape[1], spec_pred_lstm.shape[1])
+    err_lstm = np.abs(spec_pred_lstm[:, :min_len] - spec_tgt_lstm[:, :min_len])
+    
+    axes[1,0].imshow(err_lstm, aspect='auto', origin='lower', cmap='magma')
+    axes[1,0].set_title("LSTM Error Map (|Pred - Tgt|)", fontweight='bold')
+    
+    axes[1,1].imshow(spec_pred_lstm, aspect='auto', origin='lower', cmap='viridis')
+    axes[1,1].set_title("LSTM Prediction (Stage 2)", fontweight='bold')
+    
+    # U-Net results
+    spec_tgt_unet = to_spec(tgt_wav, processor_unet)
+    spec_pred_unet = to_spec(est_unet_s2, processor_unet)
+    min_len_u = min(spec_tgt_unet.shape[1], spec_pred_unet.shape[1])
+    err_unet = np.abs(spec_pred_unet[:, :min_len_u] - spec_tgt_unet[:, :min_len_u])
+    
+    axes[2,0].imshow(err_unet, aspect='auto', origin='lower', cmap='magma')
+    axes[2,0].set_title("U-Net Error Map (|Pred - Tgt|)", fontweight='bold')
+    
+    axes[2,1].imshow(spec_pred_unet, aspect='auto', origin='lower', cmap='viridis')
+    axes[2,1].set_title("U-Net Prediction (Stage 2)", fontweight='bold')
+    
+    for ax in axes.flatten():
+        ax.set_xlabel("Time")
+        ax.set_ylabel("Frequency")
+    
+    plt.suptitle(f"Stage 2 Evaluation: {selected_song}", fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    plt.show()
+    
+    # Audio playback
+    print("\nAudio Playback:")
+    print("Input (Mix):")
+    display(Audio(mix_wav, rate=sr))
+    
+    print("\nGround Truth (Target):")
+    display(Audio(tgt_wav, rate=sr))
+    
+    print("\nLSTM Prediction:")
+    display(Audio(est_lstm_s2, rate=sr))
+    
+    print("\nU-Net Prediction:")
+    display(Audio(est_unet_s2, rate=sr))
+    
+    return est_lstm_s2, est_unet_s2
+
+def plot_model_comparison(hist_lstm, hist_unet, title="Model Comparison: LSTM vs U-Net"):
     """Plot side-by-side training curves for LSTM and U-Net."""
     if not hist_lstm or not hist_unet:
         print("Training histories not available")
@@ -1431,7 +2538,7 @@ def plot_model_comparison(hist_lstm, hist_unet, title="Model A Comparison: LSTM 
     epochs_lstm = range(1, len(hist_lstm['train_loss']) + 1)
     ax1.plot(epochs_lstm, hist_lstm['train_loss'], 'o-', label='Train', linewidth=2, markersize=5)
     ax1.plot(epochs_lstm, hist_lstm['val_loss'], 's--', label='Val', linewidth=2, markersize=5)
-    ax1.set_title('Model A (LSTM)', fontsize=14, fontweight='bold')
+    ax1.set_title('Model (LSTM)', fontsize=14, fontweight='bold')
     ax1.set_xlabel('Epoch', fontsize=11)
     ax1.set_ylabel('Loss', fontsize=11)
     ax1.legend(fontsize=10)
@@ -1440,7 +2547,7 @@ def plot_model_comparison(hist_lstm, hist_unet, title="Model A Comparison: LSTM 
     epochs_unet = range(1, len(hist_unet['train_loss']) + 1)
     ax2.plot(epochs_unet, hist_unet['train_loss'], 'o-', label='Train', linewidth=2, markersize=5)
     ax2.plot(epochs_unet, hist_unet['val_loss'], 's--', label='Val', linewidth=2, markersize=5)
-    ax2.set_title('Model A (U-Net)', fontsize=14, fontweight='bold')
+    ax2.set_title('Model (U-Net)', fontsize=14, fontweight='bold')
     ax2.set_xlabel('Epoch', fontsize=11)
     ax2.set_ylabel('Loss', fontsize=11)
     ax2.legend(fontsize=10)
@@ -1454,12 +2561,12 @@ def plot_model_comparison(hist_lstm, hist_unet, title="Model A Comparison: LSTM 
     print("TRAINING SUMMARY")
     print("="*70)
     
-    print(f"\nModel A (LSTM):")
+    print(f"\nModel (LSTM):")
     print(f"   Epochs: {len(hist_lstm['train_loss'])}")
     print(f"   Best Val Loss: {min(hist_lstm['val_loss']):.6f} (epoch {hist_lstm['val_loss'].index(min(hist_lstm['val_loss']))+1})")
     print(f"   Final Train Loss: {hist_lstm['train_loss'][-1]:.6f}")
     
-    print(f"\nModel A (U-Net):")
+    print(f"\nModel (U-Net):")
     print(f"   Epochs: {len(hist_unet['train_loss'])}")
     print(f"   Best Val Loss: {min(hist_unet['val_loss']):.6f} (epoch {hist_unet['val_loss'].index(min(hist_unet['val_loss']))+1})")
     print(f"   Final Train Loss: {hist_unet['train_loss'][-1]:.6f}")
@@ -1600,7 +2707,7 @@ def evaluate_separation_quality(model_1=None, model_2=None, processor_1=None, pr
                 m1_cached = cached.get('model_1', cached.get('lstm', {})) if isinstance(cached, dict) else {}
                 m2_cached = cached.get('model_2', cached.get('unet', {})) if isinstance(cached, dict) else {}
                 if isinstance(m1_cached, dict) and isinstance(m2_cached, dict):
-                    _print_and_plot_metrics(m1_cached, m2_cached, heading="CACHED EVALUATION RESULTS")
+                    _print_and_plot_metrics(m1_cached, m2_cached, heading="EVALUATION RESULTS")
                 return cached
 
     try:
@@ -1667,7 +2774,7 @@ def evaluate_separation_quality(model_1=None, model_2=None, processor_1=None, pr
         mix_wav = np.load(mix_file)
         tgt_wav = np.load(tgt_file)
         
-        min_len: int = min(len(mix_wav), len(tgt_wav))
+        min_len = min(len(mix_wav), len(tgt_wav))
         mix_wav = mix_wav[:min_len]
         tgt_wav = tgt_wav[:min_len]
         
@@ -1928,9 +3035,6 @@ def unet_inference_accelerator(model, processor, audio, chunk_len=8.0, sr=22050,
     model.eval()
     with torch.no_grad():
         for batch_start in range(0, total_chunks, batch_size):
-            if batch_start % (batch_size * 5) == 0:
-                print(".", end="", flush=True)
-            
             batch_end = min(batch_start + batch_size, total_chunks)
             batch_chunks = chunks_data[batch_start:batch_end]
             
@@ -1939,6 +3043,10 @@ def unet_inference_accelerator(model, processor, audio, chunk_len=8.0, sr=22050,
             batch_masks = model(batch_mags)
             
             for i, chunk in enumerate(batch_chunks):
+                chunk_idx = batch_start + i
+                if chunk_idx % 5 == 0:
+                    print(".", end="", flush=True)
+                
                 mask = batch_masks[i].squeeze()
                 mag = chunk['mag']
                 phase = chunk['phase']
@@ -2014,10 +3122,10 @@ def compare_models_on_audio_file(file_path, model_lstm, model_unet, processor_ls
     model_unet.eval()
     
     print("\nRunning inference...")
-    print("LSTM (sequential, batch_size=1):")
+    print("LSTM:")
     est_lstm = sliding_window_inference(model_lstm, processor_lstm, audio, 
                                        chunk_len=8.0, sr=sr, device=device)
-    print(f"U-Net (accelerated batched forward pass, batch_size={unet_batch_size}):")
+    print(f"U-Net:")
     est_unet = unet_inference_accelerator(model_unet, processor_unet, audio,
                                          chunk_len=8.0, sr=sr, device=device, batch_size=unet_batch_size)
     
@@ -2057,3 +3165,1077 @@ def compare_models_on_audio_file(file_path, model_lstm, model_unet, processor_ls
     print(f"\n{'='*70}")
     print("INFERENCE COMPLETE")
     print(f"{'='*70}")
+
+def handle_user_upload_and_inference(data_dir, model_lstm, model_unet, processor_lstm, 
+                                      processor_unet, device, in_colab=False, sr=22050, 
+                                      duration=None, unet_batch_size=16):
+    """
+    Handle user audio file upload workflow and run inference on uploaded audio.
+    
+    Args:
+        data_dir: Base data directory (Path object)
+        model_lstm: Trained LSTM model
+        model_unet: Trained U-Net model
+        processor_lstm: AudioProcessor for LSTM
+        processor_unet: AudioProcessor for U-Net
+        device: torch device ('cuda' or 'cpu')
+        in_colab: Whether running in Google Colab environment
+        sr: Sample rate (default: 22050)
+        duration: Duration to process in seconds (None for full file)
+        unet_batch_size: Batch size for U-Net accelerated inference
+    """
+    from pathlib import Path
+    
+    upload_dir = Path(data_dir) / "user_uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    
+    if in_colab:
+        try:
+            from google.colab import files
+            uploaded = files.upload()
+            for name, data in uploaded.items():
+                out_path = upload_dir / name
+                with open(out_path, "wb") as f:
+                    f.write(data)
+                print(f"Saved: {out_path}")
+        except Exception as e:
+            print(f"Colab upload failed: {e}")
+            print(f"Place a file manually in: {upload_dir}")
+    else:
+        print(f"Place your audio file in: {upload_dir}")
+    
+    # Search for audio files
+    exts = ["*.wav", "*.mp3", "*.flac", "*.ogg", "*.m4a"]
+    audio_files = []
+    for ext in exts:
+        audio_files += list(upload_dir.glob(ext))
+    
+    audio_files = sorted(audio_files, key=lambda p: p.stat().st_mtime, reverse=True)
+    
+    if not audio_files:
+        print("No audio files found in upload folder.")
+        return
+    
+    audio_path = audio_files[0]
+    print(f"Using file: {audio_path.name}")
+    
+    compare_models_on_audio_file(
+        file_path=audio_path,
+        model_lstm=model_lstm,
+        model_unet=model_unet,
+        processor_lstm=processor_lstm,
+        processor_unet=processor_unet,
+        device=device,
+        sr=sr,
+        duration=duration,
+        unet_batch_size=unet_batch_size
+    )
+
+def compare_unet_vs_unetattention_on_audio_file(
+    file_path, model_unet, model_attn, processor_unet, processor_attn, 
+    device, sr=22050, duration=None, chunk_len=8.0
+):
+    """
+    Load a custom audio file, run inference with U-Net and UNetAttention models,
+    and display spectrograms + audio playback for comparison.
+    Does NOT save output files.
+    
+    Args:
+        file_path: Path to audio file
+        model_unet: Trained U-Net model (Stage 2)
+        model_attn: Trained UNetAttention model (Stage 2)
+        processor_unet: AudioProcessor for U-Net
+        processor_attn: AudioProcessor for UNetAttention
+        device: torch device ('cuda' or 'cpu')
+        sr: Sample rate (default: 22050)
+        duration: Duration to process in seconds (None for full file)
+        chunk_len: Chunk length for sliding window inference (default: 8.0)
+    """
+    import librosa
+    import matplotlib.pyplot as plt
+    from IPython.display import Audio, display
+    
+    print("="*70)
+    print("CUSTOM AUDIO INFERENCE: U-Net vs UNetAttention (Stage 2)")
+    print("="*70)
+    print(f"\nLoading: {file_path}")
+    
+    try:
+        audio, file_sr = librosa.load(file_path, sr=None, mono=True)
+        print(f"   Original SR: {file_sr} Hz, Duration: {len(audio)/file_sr:.2f}s")
+        
+        if file_sr != sr:
+            print(f"   Resampling to {sr} Hz...")
+            audio = librosa.resample(audio, orig_sr=file_sr, target_sr=sr)
+        
+        if duration is not None:
+            target_samples = int(duration * sr)
+            if len(audio) > target_samples:
+                audio = audio[:target_samples]
+                print(f"   Trimmed to {duration}s")
+        
+        print(f"Loaded: {len(audio)/sr:.2f}s @ {sr} Hz")
+        
+    except Exception as e:
+        print(f"Error loading audio file: {e}")
+        return
+    
+    model_unet.eval()
+    model_attn.eval()
+    
+    print("\nRunning inference...")
+    print("   - Standard U-Net (Stage 2)")
+    est_unet = sliding_window_inference(
+        model_unet, processor_unet, audio, 
+        chunk_len=chunk_len, sr=sr, device=device
+    )
+    
+    print("   - UNetAttention (Stage 2)")
+    est_attn = sliding_window_inference(
+        model_attn, processor_attn, audio,
+        chunk_len=chunk_len, sr=sr, device=device
+    )
+    
+    print(f"\n{'='*70}")
+    print("MODEL COMPARISON: U-Net vs UNetAttention (Stage 2)")
+    print(f"{'='*70}\n")
+    
+    # Create visualization
+    fig, axes = plt.subplots(3, 1, figsize=(14, 12))
+    
+    axes[0].imshow(to_spec(audio, processor_unet), aspect='auto', origin='lower', cmap='viridis')
+    axes[0].set_title("Original Mix", fontweight='bold')
+    axes[0].set_ylabel("Frequency")
+    axes[0].set_xlabel("Time")
+    
+    axes[1].imshow(to_spec(est_unet, processor_unet), aspect='auto', origin='lower', cmap='viridis')
+    axes[1].set_title("U-Net Output (Stage 2)", fontweight='bold')
+    axes[1].set_ylabel("Frequency")
+    axes[1].set_xlabel("Time")
+    
+    axes[2].imshow(to_spec(est_attn, processor_attn), aspect='auto', origin='lower', cmap='viridis')
+    axes[2].set_title("UNetAttention Output (Stage 2)", fontweight='bold')
+    axes[2].set_ylabel("Frequency")
+    axes[2].set_xlabel("Time")
+    
+    plt.tight_layout()
+    plt.show()
+    
+    # Audio playback
+    print("Audio results:\n")
+    print("Original Mix:")
+    display(Audio(audio, rate=sr))
+    
+    print("\nU-Net Output:")
+    display(Audio(est_unet, rate=sr))
+    
+    print("\nUNetAttention Output:")
+    display(Audio(est_attn, rate=sr))
+    
+    print(f"\n{'='*70}")
+    print("INFERENCE COMPLETE")
+    print(f"{'='*70}")
+
+def handle_user_upload_unetattention_inference(
+    data_dir, model_unet, model_attn, processor_unet, processor_attn,
+    device, in_colab=False, sr=22050, duration=None, chunk_len=8.0
+):
+    """
+    Handle user audio file upload workflow and run inference comparing 
+    U-Net and UNetAttention models. Does NOT save output files.
+    
+    Args:
+        data_dir: Base data directory (Path object)
+        model_unet: Trained U-Net model (Stage 2)
+        model_attn: Trained UNetAttention model (Stage 2)
+        processor_unet: AudioProcessor for U-Net
+        processor_attn: AudioProcessor for UNetAttention
+        device: torch device ('cuda' or 'cpu')
+        in_colab: Whether running in Google Colab environment
+        sr: Sample rate (default: 22050)
+        duration: Duration to process in seconds (None for full file)
+        chunk_len: Chunk length for sliding window inference (default: 8.0)
+    """
+    from pathlib import Path
+    
+    upload_dir = Path(data_dir) / "user_uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    
+    if in_colab:
+        try:
+            from google.colab import files
+            uploaded = files.upload()
+            for name, data in uploaded.items():
+                out_path = upload_dir / name
+                with open(out_path, "wb") as f:
+                    f.write(data)
+                print(f"Saved: {out_path}")
+        except Exception as e:
+            print(f"Colab upload failed: {e}")
+            print(f"Place a file manually in: {upload_dir}")
+    else:
+        print(f"Place your audio file in: {upload_dir}")
+    
+    # Search for audio files
+    exts = ["*.wav", "*.mp3", "*.flac", "*.ogg", "*.m4a"]
+    audio_files = []
+    for ext in exts:
+        audio_files += list(upload_dir.glob(ext))
+    
+    audio_files = sorted(audio_files, key=lambda p: p.stat().st_mtime, reverse=True)
+    
+    if not audio_files:
+        print("No audio files found in upload folder.")
+        return
+    
+    audio_path = audio_files[0]
+    print(f"Using file: {audio_path.name}")
+    
+    compare_unet_vs_unetattention_on_audio_file(
+        file_path=audio_path,
+        model_unet=model_unet,
+        model_attn=model_attn,
+        processor_unet=processor_unet,
+        processor_attn=processor_attn,
+        device=device,
+        sr=sr,
+        duration=duration,
+        chunk_len=chunk_len
+    )
+
+def evaluate_and_visualize_unet_vs_unetattention_stage1(
+    model_unet, processor_unet, model_attn, processor_attn,
+    mix_wav, tgt_wav, has_target, selected_song,
+    sr=22050, chunk_len=8.0, device='cuda'
+):
+    """
+    Run inference on U-Net and UNetAttention models for Stage 1 and create visualization 
+    with spectrograms and audio playback comparing both models.
+    
+    Args:
+        model_unet: Standard U-Net model
+        processor_unet: AudioProcessor for U-Net
+        model_attn: UNetAttention model
+        processor_attn: AudioProcessor for UNetAttention
+        mix_wav: Input mixture waveform
+        tgt_wav: Target (ground truth) waveform
+        has_target: Boolean indicating if target is available
+        selected_song: Name of the selected song
+        sr: Sample rate (default 22050)
+        chunk_len: Chunk length in seconds (default 8.0)
+        device: Device to run inference on (default 'cuda')
+    
+    Returns:
+        Tuple of (est_unet, est_attn) - predictions from both models
+    """
+    from IPython.display import Audio, display
+    
+    print("="*70)
+    print("STAGE 1 EVALUATION: U-Net vs UNetAttention (Simplified Mixture → Other)")
+    print("="*70)
+    
+    model_unet = model_unet.to(device)
+    model_attn = model_attn.to(device)
+    model_unet.eval()
+    model_attn.eval()
+    
+    print("\nRunning Stage 1 inference...")
+    est_unet = sliding_window_inference(
+        model_unet, processor_unet, mix_wav, chunk_len=chunk_len, sr=sr, device=device
+    )
+    est_attn = sliding_window_inference(
+        model_attn, processor_attn, mix_wav, chunk_len=chunk_len, sr=sr, device=device
+    )
+    
+    print(f"\n{'='*70}\nSTAGE 1 RESULTS: U-Net vs UNetAttention\n{'='*70}")
+    
+    # Create visualization
+    fig, axes = plt.subplots(3, 2, figsize=(15, 12))
+    
+    axes[0,0].imshow(to_spec(mix_wav, processor_unet), aspect='auto', origin='lower', cmap='viridis')
+    axes[0,0].set_title("Input: Simplified Mixture", fontweight='bold')
+    
+    if has_target:
+        axes[0,1].imshow(to_spec(tgt_wav, processor_unet), aspect='auto', origin='lower', cmap='viridis')
+        axes[0,1].set_title("Ground Truth: Other", fontweight='bold')
+    else:
+        axes[0,1].text(0.5, 0.5, "Target Not Available", ha='center', va='center', transform=axes[0,1].transAxes)
+    
+    # U-Net results
+    spec_tgt_unet = to_spec(tgt_wav, processor_unet)
+    spec_pred_unet = to_spec(est_unet, processor_unet)
+    min_len_u = min(spec_tgt_unet.shape[1], spec_pred_unet.shape[1])
+    err_unet = np.abs(spec_pred_unet[:, :min_len_u] - spec_tgt_unet[:, :min_len_u])
+    
+    axes[1,0].imshow(err_unet, aspect='auto', origin='lower', cmap='magma')
+    axes[1,0].set_title("U-Net Error Map (|Pred - Tgt|)", fontweight='bold')
+    
+    axes[1,1].imshow(spec_pred_unet, aspect='auto', origin='lower', cmap='viridis')
+    axes[1,1].set_title("U-Net Prediction (Stage 1)", fontweight='bold')
+    
+    # UNetAttention results
+    spec_tgt_attn = to_spec(tgt_wav, processor_attn)
+    spec_pred_attn = to_spec(est_attn, processor_attn)
+    min_len_a = min(spec_tgt_attn.shape[1], spec_pred_attn.shape[1])
+    err_attn = np.abs(spec_pred_attn[:, :min_len_a] - spec_tgt_attn[:, :min_len_a])
+    
+    axes[2,0].imshow(err_attn, aspect='auto', origin='lower', cmap='magma')
+    axes[2,0].set_title("UNetAttention Error Map (|Pred - Tgt|)", fontweight='bold')
+    
+    axes[2,1].imshow(spec_pred_attn, aspect='auto', origin='lower', cmap='viridis')
+    axes[2,1].set_title("UNetAttention Prediction (Stage 1)", fontweight='bold')
+    
+    for ax in axes.flatten():
+        ax.set_xlabel("Time")
+        ax.set_ylabel("Frequency")
+    
+    plt.suptitle(f"Stage 1 Evaluation: {selected_song}", fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    plt.show()
+    
+    # Audio playback
+    print("\nAudio Playback:")
+    print("Input (Mix):")
+    display(Audio(mix_wav, rate=sr))
+    
+    if has_target:
+        print("\nGround Truth (Target):")
+        display(Audio(tgt_wav, rate=sr))
+    
+    print("\nU-Net Prediction:")
+    display(Audio(est_unet, rate=sr))
+    
+    print("\nUNetAttention Prediction:")
+    display(Audio(est_attn, rate=sr))
+    
+    return est_unet, est_attn
+
+def evaluate_and_visualize_unet_vs_unetattention_stage2(
+    model_unet, processor_unet, model_attn, processor_attn,
+    mix_wav, tgt_wav, has_target, selected_song,
+    sr=22050, chunk_len=8.0, device='cuda'
+):
+    """
+    Run inference on U-Net and UNetAttention models for Stage 2 and create visualization 
+    with spectrograms and audio playback comparing both models.
+    
+    Args:
+        model_unet: Standard U-Net model
+        processor_unet: AudioProcessor for U-Net
+        model_attn: UNetAttention model (Stage 2)
+        processor_attn: AudioProcessor for UNetAttention
+        mix_wav: Input mixture waveform
+        tgt_wav: Target (ground truth) waveform
+        has_target: Boolean indicating if target is available
+        selected_song: Name of the selected song
+        sr: Sample rate (default 22050)
+        chunk_len: Chunk length in seconds (default 8.0)
+        device: Device to run inference on (default 'cuda')
+    
+    Returns:
+        Tuple of (est_unet, est_attn) - predictions from both models
+    """
+    from IPython.display import Audio, display
+    
+    print("="*70)
+    print("STAGE 2 EVALUATION: U-Net vs UNetAttention (Full Band Mixture → Vocals)")
+    print("="*70)
+    
+    model_unet = model_unet.to(device)
+    model_attn = model_attn.to(device)
+    model_unet.eval()
+    model_attn.eval()
+    
+    print("\nRunning Stage 2 inference...")
+    est_unet = sliding_window_inference(
+        model_unet, processor_unet, mix_wav, chunk_len=chunk_len, sr=sr, device=device
+    )
+    est_attn = sliding_window_inference(
+        model_attn, processor_attn, mix_wav, chunk_len=chunk_len, sr=sr, device=device
+    )
+    
+    print(f"\n{'='*70}\nSTAGE 2 RESULTS: U-Net vs UNetAttention\n{'='*70}")
+    
+    # Create visualization
+    fig, axes = plt.subplots(3, 2, figsize=(15, 12))
+    
+    axes[0,0].imshow(to_spec(mix_wav, processor_unet), aspect='auto', origin='lower', cmap='viridis')
+    axes[0,0].set_title("Input: Full Band Mixture", fontweight='bold')
+    
+    if has_target:
+        axes[0,1].imshow(to_spec(tgt_wav, processor_unet), aspect='auto', origin='lower', cmap='viridis')
+        axes[0,1].set_title("Ground Truth: Vocals", fontweight='bold')
+    else:
+        axes[0,1].text(0.5, 0.5, "Target Not Available", ha='center', va='center', transform=axes[0,1].transAxes)
+    
+    # U-Net results
+    spec_tgt_unet = to_spec(tgt_wav, processor_unet)
+    spec_pred_unet = to_spec(est_unet, processor_unet)
+    min_len_u = min(spec_tgt_unet.shape[1], spec_pred_unet.shape[1])
+    err_unet = np.abs(spec_pred_unet[:, :min_len_u] - spec_tgt_unet[:, :min_len_u])
+    
+    axes[1,0].imshow(err_unet, aspect='auto', origin='lower', cmap='magma')
+    axes[1,0].set_title("U-Net Error Map (|Pred - Tgt|)", fontweight='bold')
+    
+    axes[1,1].imshow(spec_pred_unet, aspect='auto', origin='lower', cmap='viridis')
+    axes[1,1].set_title("U-Net Prediction (Stage 2)", fontweight='bold')
+    
+    # UNetAttention results
+    spec_tgt_attn = to_spec(tgt_wav, processor_attn)
+    spec_pred_attn = to_spec(est_attn, processor_attn)
+    min_len_a = min(spec_tgt_attn.shape[1], spec_pred_attn.shape[1])
+    err_attn = np.abs(spec_pred_attn[:, :min_len_a] - spec_tgt_attn[:, :min_len_a])
+    
+    axes[2,0].imshow(err_attn, aspect='auto', origin='lower', cmap='magma')
+    axes[2,0].set_title("UNetAttention Error Map (|Pred - Tgt|)", fontweight='bold')
+    
+    axes[2,1].imshow(spec_pred_attn, aspect='auto', origin='lower', cmap='viridis')
+    axes[2,1].set_title("UNetAttention Prediction (Stage 2)", fontweight='bold')
+    
+    for ax in axes.flatten():
+        ax.set_xlabel("Time")
+        ax.set_ylabel("Frequency")
+    
+    plt.suptitle(f"Stage 2 Evaluation: {selected_song}", fontsize=14, fontweight='bold')
+    plt.tight_layout()
+    plt.show()
+    
+    # Audio playback
+    print("\nAudio Playback:")
+    print("Input (Mix):")
+    display(Audio(mix_wav, rate=sr))
+    
+    if has_target:
+        print("\nGround Truth (Target):")
+        display(Audio(tgt_wav, rate=sr))
+    
+    print("\nU-Net Prediction:")
+    display(Audio(est_unet, rate=sr))
+    
+    print("\nUNetAttention Prediction:")
+    display(Audio(est_attn, rate=sr))
+    
+    return est_unet, est_attn
+
+def train_unetattention_stage2(data_dir, checkpoint_dir, device, chunk_duration=8.0,
+                                skip_training=False, batch_size=32, base_filters=32,
+                                num_layers=4, num_heads=4, learning_rate=None,
+                                ckpt_attn_s1=None):
+    """
+    Train UNetAttention model for Stage 2 (4 → 1 channels) with curriculum learning.
+    
+    Args:
+        data_dir: Path to data directory
+        checkpoint_dir: Path to checkpoint directory
+        device: Device to train on ('cuda' or 'cpu')
+        chunk_duration: Duration of audio chunks in seconds
+        skip_training: Whether to skip training if checkpoint exists
+        batch_size: Batch size for training
+        base_filters: Number of base filters for UNetAttention
+        num_layers: Number of layers in UNetAttention
+        num_heads: Number of attention heads
+        learning_rate: Learning rate (uses config default if None)
+        ckpt_attn_s1: Path to Stage 1 checkpoint for curriculum learning (auto-detected if None)
+    
+    Returns:
+        Dictionary with model, processor, loss_fn, history, and checkpoint path
+    """
+    from models import models as ma
+    from pathlib import Path
+    
+    print(f"\n{'='*70}")
+    print('STAGE 2 TRAINING: UNetAttention (Full Mix -> Target)')
+    print(f"{'='*70}\n")
+    
+    checkpoint_dir = Path(checkpoint_dir)
+    ckpt_attn_s2 = checkpoint_dir / f'model_unetattention_stage2_{chunk_duration:.0f}s.pth'
+    
+    # Auto-detect Stage 1 checkpoint if not provided
+    if ckpt_attn_s1 is None:
+        ckpt_attn_s1 = checkpoint_dir / f'model_unetattention_stage1_{chunk_duration:.0f}s.pth'
+    
+    if ckpt_attn_s2.exists():
+        print(f"UNetAttention Stage 2 checkpoint found: {ckpt_attn_s2.name}")
+    
+    if skip_training and ckpt_attn_s2.exists():
+        print("Skipping training (skip_training=True and checkpoint exists)")
+        
+        # Load model from checkpoint
+        print(f"Initializing UNetAttention ({base_filters} filters, {num_layers} layers, {num_heads} heads)...")
+        model_attn_s2 = ma.UNetAttention(
+            in_channels=1,
+            out_channels=1,
+            base_filters=base_filters,
+            num_layers=num_layers,
+            num_heads=num_heads,
+            batchnorm=True,
+            dropout=0.1
+        ).to(device)
+        
+        checkpoint = torch.load(ckpt_attn_s2, map_location=device)
+        model_attn_s2.load_state_dict(checkpoint['model_state_dict'])
+        hist_attn_s2 = checkpoint.get('history', {})
+        
+        processor_attn_s2 = AudioProcessor(device=device)
+        loss_fn_attn_s2 = nn.MSELoss()
+        
+        print("Model loaded from checkpoint")
+    else:
+        # Get training config
+        attn_config = get_training_config('unet')
+        attn_config['batch_size'] = batch_size
+        
+        if learning_rate is not None:
+            attn_config['learning_rate'] = learning_rate
+        
+        # Initialize model
+        print(f"Initializing UNetAttention ({base_filters} filters, {num_layers} layers, {num_heads} heads)...")
+        model_attn_s2 = ma.UNetAttention(
+            in_channels=1,
+            out_channels=1,
+            base_filters=base_filters,
+            num_layers=num_layers,
+            num_heads=num_heads,
+            batchnorm=True,
+            dropout=0.1
+        ).to(device)
+        
+        # Load Stage 1 weights for curriculum learning
+        if Path(ckpt_attn_s1).exists():
+            print(f"Loading Stage 1 weights from: {Path(ckpt_attn_s1).name}")
+            checkpoint = torch.load(ckpt_attn_s1, map_location=device)
+            model_attn_s2.load_state_dict(checkpoint['model_state_dict'])
+            print("Curriculum Learning: Stage 1 weights loaded.")
+        else:
+            print("Stage 1 checkpoint not found! Training from scratch (harder convergence).")
+        
+        processor_attn_s2 = AudioProcessor(device=device)
+        optimizer_attn_s2 = torch.optim.Adam(model_attn_s2.parameters(), lr=attn_config['learning_rate'])
+        loss_fn_attn_s2 = nn.MSELoss()
+        
+        # Train model
+        hist_attn_s2 = train_model_stage(
+            model=model_attn_s2,
+            processor=processor_attn_s2,
+            optimizer=optimizer_attn_s2,
+            loss_fn=loss_fn_attn_s2,
+            training_data_dir=data_dir,
+            stage='stage2',
+            ckpt_path=ckpt_attn_s2,
+            device=device,
+            train_config=attn_config,
+            skip_training=False
+        )
+    
+    return {
+        'model_attn_s2': model_attn_s2,
+        'processor_attn_s2': processor_attn_s2,
+        'loss_fn_attn_s2': loss_fn_attn_s2,
+        'hist_attn_s2': hist_attn_s2,
+        'ckpt_attn_s2': ckpt_attn_s2
+    }
+
+def train_unetattention_vocals_only(data_dir, checkpoint_dir, device, 
+                                     skip_training=False, batch_size=4, 
+                                     base_filters=32, num_layers=5, num_heads=4,
+                                     learning_rate=1e-4, num_epochs=20):
+    """
+    Train UNetAttention model specifically for vocal extraction (Stage 2 Mix -> Clean Vocals).
+    This is different from standard Stage 2 which extracts vocals from 4-channel input.
+    Here we use the same Stage 2 mixture but target clean vocal tracks.
+    
+    Args:
+        data_dir: Path to data directory
+        checkpoint_dir: Path to checkpoint directory
+        device: Device to train on ('cuda' or 'cpu')
+        skip_training: Whether to skip training if checkpoint exists
+        batch_size: Batch size for training
+        base_filters: Number of base filters for UNetAttention
+        num_layers: Number of layers in UNetAttention
+        num_heads: Number of attention heads
+        learning_rate: Learning rate for optimizer
+        num_epochs: Number of training epochs
+    
+    Returns:
+        Dictionary with model, processor, loss_fn, history, and checkpoint path
+    """
+    from models import models as ma
+    import matplotlib.pyplot as plt
+    from torch.utils.data import DataLoader
+    
+    print(f"\n{'='*70}")
+    print('TRAINING: UNetAttention (Stage 2 Mix -> Clean Vocals)')
+    print(f"{'='*70}\n")
+    
+    train_mix_dir = data_dir / 'stage2' / 'train' / 'mixture'
+    train_voc_dir = data_dir / 'vocals' / 'train'
+    val_mix_dir = data_dir / 'stage2' / 'val' / 'mixture'
+    val_voc_dir = data_dir / 'vocals' / 'val'
+    
+    ckpt_voc_attn = checkpoint_dir / 'model_unetattention_vocals_only.pth'
+    
+    def get_paired_files(mix_dir, voc_dir, split_name):
+        """Match mixture files with corresponding vocal files."""
+        mix_files = sorted(list(mix_dir.glob('*.npy')))
+        voc_files_dict = {f.name: f for f in voc_dir.glob('*.npy')}
+        valid_pairs = [(mf, voc_files_dict[mf.name]) for mf in mix_files if mf.name in voc_files_dict]
+        print(f"   {split_name}: Found {len(valid_pairs)} pairs")
+        if not valid_pairs:
+            return [], []
+        mix_list = [p[0] for p in valid_pairs]
+        tgt_list = [p[1] for p in valid_pairs]
+        return mix_list, tgt_list
+    
+    # Check if checkpoint exists
+    if ckpt_voc_attn.exists():
+        print(f"Checkpoint found: {ckpt_voc_attn.name}")
+        if skip_training:
+            print("Skipping training (skip_training=True and checkpoint exists)")
+            
+            # Load model from checkpoint
+            model_voc_attn = ma.UNetAttention(
+                in_channels=1,
+                out_channels=1,
+                base_filters=base_filters,
+                num_layers=num_layers,
+                num_heads=num_heads,
+                batchnorm=True,
+                dropout=0.1
+            ).to(device)
+            
+            checkpoint = torch.load(ckpt_voc_attn, map_location=device, weights_only=False)
+            model_voc_attn.load_state_dict(checkpoint['model_state_dict'])
+            voc_history = checkpoint.get('history', {})
+            
+            processor_voc = AudioProcessor(device=device)
+            loss_fn_voc = nn.MSELoss()
+            
+            print("Model loaded from checkpoint")
+            
+            return {
+                'model_voc_attn': model_voc_attn,
+                'processor_voc': processor_voc,
+                'loss_fn_voc': loss_fn_voc,
+                'voc_history': voc_history,
+                'ckpt_voc_attn': ckpt_voc_attn
+            }
+    
+    # Check for training data
+    if not train_mix_dir.exists() or not train_voc_dir.exists():
+        print("Training folders not found (data_sub mode detected).")
+        if ckpt_voc_attn.exists():
+            print(f"Using existing checkpoint: {ckpt_voc_attn.name}")
+            
+            # Load model from checkpoint
+            model_voc_attn = ma.UNetAttention(
+                in_channels=1,
+                out_channels=1,
+                base_filters=base_filters,
+                num_layers=num_layers,
+                num_heads=num_heads,
+                batchnorm=True,
+                dropout=0.1
+            ).to(device)
+            
+            checkpoint = torch.load(ckpt_voc_attn, map_location=device, weights_only=False)
+            model_voc_attn.load_state_dict(checkpoint['model_state_dict'])
+            voc_history = checkpoint.get('history', {})
+            
+            processor_voc = AudioProcessor(device=device)
+            loss_fn_voc = nn.MSELoss()
+            
+            return {
+                'model_voc_attn': model_voc_attn,
+                'processor_voc': processor_voc,
+                'loss_fn_voc': loss_fn_voc,
+                'voc_history': voc_history,
+                'ckpt_voc_attn': ckpt_voc_attn
+            }
+        else:
+            print("No checkpoint found, and training data is unavailable.")
+            print("Provide full data (train/val) or place a pretrained checkpoint in checkpoints/.")
+            raise FileNotFoundError("Cannot train: no training data and no existing checkpoint.")
+    
+    # Match training and validation files
+    print("Matching files...")
+    train_mix, train_tgt = get_paired_files(train_mix_dir, train_voc_dir, "Train")
+    
+    if val_mix_dir.exists() and val_voc_dir.exists():
+        val_mix, val_tgt = get_paired_files(val_mix_dir, val_voc_dir, "Validation")
+    else:
+        print("Validation folders not found. Reusing train pairs for validation.")
+        val_mix, val_tgt = train_mix, train_tgt
+    
+    if not train_mix:
+        print("No training pairs found.")
+        if ckpt_voc_attn.exists():
+            print(f"Using existing checkpoint: {ckpt_voc_attn.name}")
+            
+            # Load model from checkpoint
+            model_voc_attn = ma.UNetAttention(
+                in_channels=1,
+                out_channels=1,
+                base_filters=base_filters,
+                num_layers=num_layers,
+                num_heads=num_heads,
+                batchnorm=True,
+                dropout=0.1
+            ).to(device)
+            
+            checkpoint = torch.load(ckpt_voc_attn, map_location=device, weights_only=False)
+            model_voc_attn.load_state_dict(checkpoint['model_state_dict'])
+            voc_history = checkpoint.get('history', {})
+            
+            processor_voc = AudioProcessor(device=device)
+            loss_fn_voc = nn.MSELoss()
+            
+            return {
+                'model_voc_attn': model_voc_attn,
+                'processor_voc': processor_voc,
+                'loss_fn_voc': loss_fn_voc,
+                'voc_history': voc_history,
+                'ckpt_voc_attn': ckpt_voc_attn
+            }
+        else:
+            raise RuntimeError("Cannot train: no paired training files and no existing checkpoint.")
+    
+    # Create datasets and dataloaders
+    train_dataset = StandardDataset(train_mix, train_tgt)
+    val_dataset = StandardDataset(val_mix, val_tgt)
+    
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=batch_size,
+        shuffle=True,
+        num_workers=2 if torch.cuda.is_available() else 0,
+        pin_memory=torch.cuda.is_available()
+    )
+    
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=2 if torch.cuda.is_available() else 0,
+        pin_memory=torch.cuda.is_available()
+    )
+    
+    # Initialize model
+    print(f"Initializing UNetAttention ({base_filters} filters, {num_layers} layers, {num_heads} heads)...")
+    model_voc_attn = ma.UNetAttention(
+        in_channels=1,
+        out_channels=1,
+        base_filters=base_filters,
+        num_layers=num_layers,
+        num_heads=num_heads,
+        batchnorm=True,
+        dropout=0.1
+    ).to(device)
+    
+    processor_voc = AudioProcessor(device=device)
+    optimizer_voc = torch.optim.Adam(model_voc_attn.parameters(), lr=learning_rate)
+    loss_fn_voc = nn.MSELoss()
+    
+    # Check if checkpoint exists before training
+    if ckpt_voc_attn.exists():
+        print(f"Checkpoint found: {ckpt_voc_attn.name}")
+        print("Loading existing model instead of training...")
+        
+        # Load checkpoint
+        checkpoint = torch.load(ckpt_voc_attn, map_location=device, weights_only=False)
+        model_voc_attn.load_state_dict(checkpoint['model_state_dict'])
+        voc_history = checkpoint.get('history', {})
+        
+        print("Model loaded successfully from checkpoint")
+    else:
+        # Create trainer
+        voc_trainer = UniversalTrainer(
+            model=model_voc_attn,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            processor=processor_voc,
+            optimizer=optimizer_voc,
+            loss_fn=loss_fn_voc,
+            device=device,
+            input_type='spectrogram'
+        )
+        
+        # Train model
+        print("Starting Vocal Extraction Training...")
+        voc_history = voc_trainer.train(num_epochs=num_epochs, save_path=ckpt_voc_attn)
+        
+        # Plot training curves
+        plt.figure(figsize=(10, 5))
+        plt.plot(voc_history['train_loss'], label='Train Loss', linewidth=2)
+        plt.plot(voc_history['val_loss'], label='Val Loss', linewidth=2)
+        plt.title("UNetAttention: Vocal Extraction Training", fontsize=14, fontweight='bold')
+        plt.xlabel("Epoch", fontsize=12)
+        plt.ylabel("MSE Loss", fontsize=12)
+        plt.legend(fontsize=11)
+        plt.grid(True, alpha=0.3)
+        plt.tight_layout()
+        plt.show()
+    
+    return {
+        'model_voc_attn': model_voc_attn,
+        'processor_voc': processor_voc,
+        'loss_fn_voc': loss_fn_voc,
+        'voc_history': voc_history,
+        'ckpt_voc_attn': ckpt_voc_attn
+    }
+
+def evaluate_vocals_extraction_unetattention(data_dir, checkpoint_dir, device, 
+                                              model_voc_attn=None, processor_voc=None,
+                                              sr=22050, duration=120.0, chunk_len=8.0, 
+                                              hop_length=4.0, base_filters=32, 
+                                              num_layers=5, num_heads=4, auto_select=False):
+    """
+    Evaluate the UNetAttention model trained for vocal extraction on test set.
+    
+    This function:
+    - Loads the model from checkpoint if not provided
+    - Selects a test song (auto or interactive)
+    - Stitches chunks with overlap-add
+    - Runs inference to extract vocals
+    - Visualizes spectrograms and error maps
+    - Plays back audio for comparison
+    
+    Args:
+        data_dir: Path to data directory
+        checkpoint_dir: Path to checkpoint directory
+        device: Device to run inference on
+        model_voc_attn: Pre-loaded model (optional)
+        processor_voc: Pre-loaded processor (optional)
+        sr: Sample rate
+        duration: Duration in seconds to process
+        chunk_len: Chunk length for sliding window inference
+        hop_length: Hop length for chunk stitching
+        base_filters: Base filters for model architecture (if loading)
+        num_layers: Number of layers (if loading)
+        num_heads: Number of attention heads (if loading)
+        auto_select: If True, automatically select first song
+    
+    Returns:
+        Dictionary with extracted vocals and metadata
+    """
+    from models import models as ma
+    import matplotlib.pyplot as plt
+    from IPython.display import Audio, display
+    
+    print("="*70)
+    print("VOCAL EXTRACTION FROM TEST SET (Stage 2 - UNetAttention)")
+    print("="*70)
+    
+    # Initialize model if not provided
+    if model_voc_attn is None:
+        model_voc_attn = ma.UNetAttention(
+            in_channels=1,
+            out_channels=1,
+            base_filters=base_filters,
+            num_layers=num_layers,
+            num_heads=num_heads,
+            batchnorm=True,
+            dropout=0.1
+        ).to(device)
+    
+    # Initialize processor if not provided
+    if processor_voc is None:
+        processor_voc = AudioProcessor(device=device)
+    
+    # Load checkpoint
+    ckpt_voc_attn = checkpoint_dir / 'model_unetattention_vocals_only.pth'
+    if ckpt_voc_attn.exists():
+        checkpoint = torch.load(ckpt_voc_attn, map_location=device, weights_only=False)
+        model_voc_attn.load_state_dict(checkpoint['model_state_dict'])
+        model_voc_attn.eval()
+        print(f"Model loaded: {ckpt_voc_attn.name}")
+    else:
+        print(f"Model not found: {ckpt_voc_attn}")
+        raise FileNotFoundError(f"Checkpoint {ckpt_voc_attn} does not exist")
+    
+    # Setup test directories
+    mix_base = data_dir / 'stage2' / 'test'
+    vocal_base = data_dir / 'vocals' / 'test'
+    mix_dir = mix_base / 'mixture'
+    vocal_dir = vocal_base
+    
+    if not mix_dir.exists() or not vocal_dir.exists():
+        print("ERROR: Test directories not found")
+        print(f"   Mixture dir: {mix_dir.exists()}")
+        print(f"   Vocals dir: {vocal_dir.exists()}")
+        raise FileNotFoundError("Test data directories not found")
+    
+    print("Found test directories")
+    
+    # Parse songs and chunks
+    def parse_song_and_idx(stem):
+        if '_chunk' in stem:
+            parts = stem.rsplit('_chunk', 1)
+            if len(parts) == 2 and parts[1].isdigit():
+                return parts[0], int(parts[1])
+        parts = stem.split('_')
+        if len(parts) >= 2 and parts[-1].isdigit():
+            return '_'.join(parts[:-1]), int(parts[-1])
+        return stem, 0
+    
+    all_mix_files = sorted(list(mix_dir.glob('*.npy')))
+    all_vocal_files = sorted(list(vocal_dir.glob('*.npy')))
+    
+    if len(all_mix_files) == 0:
+        raise FileNotFoundError("No mixture files found")
+    if len(all_vocal_files) == 0:
+        raise FileNotFoundError("No vocal files found")
+    
+    # Organize songs by name
+    songs = {}
+    for f in all_mix_files:
+        song_name, idx = parse_song_and_idx(f.stem)
+        if song_name not in songs:
+            songs[song_name] = {}
+        songs[song_name][idx] = f
+    
+    vocal_song_names = set(parse_song_and_idx(f.stem)[0] for f in all_vocal_files)
+    song_list = sorted([s for s in songs.keys() if s in vocal_song_names])
+    
+    if not song_list:
+        song_list = sorted(songs.keys())
+    
+    # Song selection
+    if len(song_list) == 1 or auto_select:
+        selected_song = song_list[0]
+        print(f"\nAuto-selected: {selected_song}")
+    else:
+        print(f"\nFound {len(song_list)} songs:")
+        for i, song in enumerate(song_list):
+            print(f"   {i}: {song}")
+        print(f"\nSelect a song [0-{len(song_list)-1}] or press Enter for default (0):")
+        try:
+            choice = input("Choice: ").strip()
+            idx = int(choice) if choice else 0
+            if idx < 0 or idx >= len(song_list):
+                idx = 0
+        except Exception:
+            idx = 0
+        selected_song = song_list[idx]
+    
+    print(f"\nSelected: {selected_song}")
+    
+    chunks = songs[selected_song]
+    print(f"   Found {len(chunks)} chunks")
+    
+    # Stitch chunks with overlap-add
+    print("\nStitching chunks...")
+    hop_samples = int(hop_length * sr)
+    target_samples = int(duration * sr)
+    mix_wav = np.zeros(target_samples, dtype=np.float32)
+    vocal_wav_gt = np.zeros(target_samples, dtype=np.float32)
+    weights = np.zeros(target_samples, dtype=np.float32)
+    has_target = True
+    
+    for chunk_idx in sorted(chunks.keys()):
+        pos = chunk_idx * hop_samples
+        if pos >= target_samples:
+            break
+        
+        mix_chunk = np.load(chunks[chunk_idx])
+        vocal_filename = chunks[chunk_idx].name
+        vocal_path = vocal_dir / vocal_filename
+        
+        if vocal_path.exists():
+            vocal_chunk = np.load(vocal_path)
+        else:
+            vocal_chunk = np.zeros_like(mix_chunk)
+            has_target = False
+        
+        valid_len = min(len(mix_chunk), target_samples - pos)
+        window = np.hanning(len(mix_chunk))[:valid_len]
+        
+        mix_wav[pos:pos+valid_len] += mix_chunk[:valid_len] * window
+        vocal_wav_gt[pos:pos+valid_len] += vocal_chunk[:valid_len] * window
+        weights[pos:pos+valid_len] += window
+    
+    mask = weights > 0
+    mix_wav[mask] = mix_wav[mask] / weights[mask]
+    vocal_wav_gt[mask] = vocal_wav_gt[mask] / weights[mask]
+    
+    print("Stitching complete:")
+    print(f"   Mix shape: {mix_wav.shape}, range=[{mix_wav.min():.4f}, {mix_wav.max():.4f}]")
+    print(f"   Vocal GT shape: {vocal_wav_gt.shape}, range=[{vocal_wav_gt.min():.4f}, {vocal_wav_gt.max():.4f}]")
+    
+    # Run inference
+    print("\nRunning UNetAttention inference...")
+    model_voc_attn.to(device)
+    model_voc_attn.eval()
+    extracted_vocals = sliding_window_inference(
+        model_voc_attn, processor_voc, mix_wav,
+        chunk_len=chunk_len, sr=sr, device=device
+    )
+    
+    print("Inference complete:")
+    print(f"   Extracted shape: {extracted_vocals.shape}")
+    
+    # Visualization
+    print(f"\n{'='*70}\nVISUALIZATION\n{'='*70}")
+    
+    fig, axes = plt.subplots(2, 2, figsize=(16, 10))
+    
+    # Input mixture
+    spec_mix = to_spec(mix_wav, processor_voc)
+    im0 = axes[0, 0].imshow(spec_mix, aspect='auto', origin='lower', cmap='viridis')
+    axes[0, 0].set_title("Input: Full Band Mixture", fontweight='bold', fontsize=12)
+    plt.colorbar(im0, ax=axes[0, 0])
+    
+    # Ground truth vocals
+    if has_target:
+        spec_vocal_gt = to_spec(vocal_wav_gt, processor_voc)
+        im1 = axes[0, 1].imshow(spec_vocal_gt, aspect='auto', origin='lower', cmap='viridis')
+        axes[0, 1].set_title("Ground Truth: Vocals", fontweight='bold', fontsize=12)
+        plt.colorbar(im1, ax=axes[0, 1])
+    else:
+        axes[0, 1].text(0.5, 0.5, "Target Not Available", ha='center', fontsize=14)
+        axes[0, 1].set_title("Ground Truth: Vocals", fontweight='bold', fontsize=12)
+    
+    # Extracted vocals
+    spec_pred = to_spec(extracted_vocals, processor_voc)
+    im2 = axes[1, 0].imshow(spec_pred, aspect='auto', origin='lower', cmap='viridis')
+    axes[1, 0].set_title("Extracted Vocals (UNetAttention)", fontweight='bold', fontsize=12)
+    plt.colorbar(im2, ax=axes[1, 0])
+    
+    # Error map
+    if has_target:
+        min_len = min(spec_vocal_gt.shape[1], spec_pred.shape[1])
+        err = np.abs(spec_pred[:, :min_len] - spec_vocal_gt[:, :min_len])
+        im3 = axes[1, 1].imshow(err, aspect='auto', origin='lower', cmap='hot')
+        axes[1, 1].set_title("Error Map |Pred - GT|", fontweight='bold', fontsize=12)
+        plt.colorbar(im3, ax=axes[1, 1])
+        mse = np.mean(err**2)
+        print(f"   MSE Loss: {mse:.6f}")
+    else:
+        axes[1, 1].text(0.5, 0.5, "No Target Available\nfor Error Computation", 
+                       ha='center', fontsize=12)
+        axes[1, 1].set_title("Error Map", fontweight='bold', fontsize=12)
+    
+    plt.tight_layout()
+    plt.show()
+    
+    # Audio playback
+    print("\nAudio Comparison:")
+    print("   1) Input Mixture:")
+    display(Audio(mix_wav, rate=sr))
+    
+    if has_target:
+        print("\n   2) Ground Truth Vocals:")
+        display(Audio(vocal_wav_gt, rate=sr))
+    
+    print("\n   3) Extracted Vocals (UNetAttention):")
+    display(Audio(extracted_vocals, rate=sr))
+    
+    print("\nExtraction complete!")
+    
+    return {
+        'mix_wav': mix_wav,
+        'vocal_wav_gt': vocal_wav_gt,
+        'extracted_vocals': extracted_vocals,
+        'has_target': has_target,
+        'selected_song': selected_song
+    }
+
