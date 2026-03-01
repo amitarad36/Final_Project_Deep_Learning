@@ -15,16 +15,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class ConvLayer2D(nn.Module):
-    """
-    2D Convolutional layer with optional BatchNorm, Dropout, and ReLU.
-    """
+
     def __init__(self, in_channels, out_channels, kernel_size, stride, padding, batchnorm=True, dropout=0.0):
         super().__init__()
-        layers = [nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding)]
+        layers: list[nn.Module] = [nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding)]
         if batchnorm:
             layers.append(nn.BatchNorm2d(out_channels))
         if dropout > 0:
-            layers.append(nn.Dropout2d(dropout))
+            layers.append(nn.Dropout2d(p=dropout))
         layers.append(nn.ReLU())
         self.block = nn.Sequential(*layers)
 
@@ -63,10 +61,7 @@ class DecoderBlock(nn.Module):
         return x
 
 class TimeFrequencyDomainUNet(nn.Module):
-    """
-    U-Net architecture for time-frequency domain source separation.
-    Supports optional batch normalization and dropout.
-    """
+
     def __init__(self, in_channels=1, out_channels=1, base_filters=32, num_layers=4, batchnorm=True, dropout=0.0):
         super().__init__()
         self.num_layers = num_layers
@@ -106,11 +101,7 @@ class TimeFrequencyDomainUNet(nn.Module):
 
 
 class MultiHeadSelfAttention2D(nn.Module):
-    """
-    Applies Multi-Head Self-Attention to 2D feature maps.
-    Input: (Batch, Channels, Height, Width)
-    Output: (Batch, Channels, Height, Width)
-    """
+
     def __init__(self, in_channels, num_heads=4, dropout=0.1):
         super().__init__()
         self.num_heads = num_heads
@@ -148,10 +139,7 @@ class MultiHeadSelfAttention2D(nn.Module):
         return self.norm(x + out)
 
 class UNetAttention(nn.Module):
-    """
-    U-Net with Self-Attention at the bottleneck.
-    Improves feature representation by allowing the model to focus on important patterns.
-    """
+
     def __init__(self, in_channels=1, out_channels=1, base_filters=32, num_layers=4, num_heads=4, batchnorm=True, dropout=0.1):
         super().__init__()
         self.num_layers = num_layers
@@ -204,25 +192,7 @@ class UNetAttention(nn.Module):
 
 
 class SpectrogramMaskingLSTM(nn.Module):
-    """
-    LSTM-based source separation model using spectrogram masking.
-    Based on "Source Separation & Automatic Transcription for Music" paper.
-    
-    Algorithm:
-    1. Input: Magnitude spectrogram S (already log-transformed)
-    2. Batch normalization
-    3. LSTM processing (temporal modeling)
-    4. Embedding layer to generate mask M
-    5. Output: mask in [0, 1]
-    
-    Architecture:
-    - Input: (batch, 1, freq_bins, time_steps)
-    - BatchNorm for normalization
-    - Bidirectional LSTM for temporal modeling
-    - Dense layers to generate mask
-    - Sigmoid activation for mask in [0, 1]
-    """
-    
+
     def __init__(
         self, 
         freq_bins=1025,
@@ -260,16 +230,7 @@ class SpectrogramMaskingLSTM(nn.Module):
         )
     
     def forward(self, x):
-        """
-        Forward pass following the paper's algorithm.
-        
-        Args:
-            x: Input spectrogram of shape (batch, 1, freq_bins, time_steps)
-               Already in log-magnitude representation
-        
-        Returns:
-            mask: Predicted mask of shape (batch, 1, freq_bins, time_steps)
-        """
+
         if x.ndim == 3:
             x = x.unsqueeze(1)
         elif x.ndim != 4:
@@ -297,45 +258,3 @@ class SpectrogramMaskingLSTM(nn.Module):
         mask = mask.unsqueeze(1)
         
         return mask
-
-def get_unet_config():
-    """
-    Returns configuration for Model A (U-Net).
-    """
-    return {
-        'model_type': 'unet',
-        'in_channels': 1,
-        'out_channels': 1,
-        'base_filters': 48,
-        'num_layers': 4,
-        'batchnorm': True,
-        'dropout': 0.1
-    }
-
-def get_unet_attention_config():
-    """
-    Returns configuration for U-Net with Attention (UNetAttention).
-    """
-    return {
-        'model_type': 'unet_attention',
-        'in_channels': 1,
-        'out_channels': 1,
-        'base_filters': 48,
-        'num_layers': 4,
-        'num_heads': 4,
-        'batchnorm': True,
-        'dropout': 0.1
-    }
-
-def get_lstm_config():
-    """
-    Returns configuration for Model A (LSTM) - full version.
-    """
-    return {
-        'model_type': 'lstm',
-        'freq_bins': 1025,
-        'hidden_size': 512,
-        'num_layers': 2,
-        'dropout': 0.3,
-        'bidirectional': True
-    }
