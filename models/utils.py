@@ -248,6 +248,66 @@ def extract_and_process_data(project_root, data_dir, musdb18_path, in_colab, fol
     
     return data_dir
 
+def extract_data_sub_to_local(project_root, data_dir):
+    """
+    Extract data_sub.zip and merge its contents into the local data directory.
+    
+    Args:
+        project_root: Path to project root directory
+        data_dir: Path to target data directory
+    
+    Returns:
+        bool: True if extraction succeeded, False otherwise
+    """
+    import zipfile
+    import shutil
+    
+    data_sub_zip = project_root / "data_sub.zip"
+    
+    if not data_sub_zip.exists():
+        print(f"\ndata_sub.zip not found at {data_sub_zip}")
+        print("Skipping data_sub extraction...")
+        return False
+    
+    print(f"\nExtracting data_sub.zip to {data_dir}...")
+    
+    # Create a temporary extraction directory
+    temp_extract_dir = project_root / "temp_data_sub"
+    temp_extract_dir.mkdir(exist_ok=True)
+    
+    try:
+        # Extract the zip file
+        with zipfile.ZipFile(data_sub_zip, 'r') as zip_ref:
+            zip_ref.extractall(temp_extract_dir)
+        
+        # Find the data_sub folder (it might be nested)
+        data_sub_source = temp_extract_dir / "data_sub"
+        if not data_sub_source.exists():
+            # Check if contents were extracted directly
+            data_sub_source = temp_extract_dir
+        
+        # Copy contents to DATA_DIR
+        for item in data_sub_source.iterdir():
+            if item.is_dir():
+                dest = data_dir / item.name
+                print(f"  Copying {item.name} -> {dest}")
+                if dest.exists():
+                    # Merge directories
+                    shutil.copytree(item, dest, dirs_exist_ok=True)
+                else:
+                    shutil.copytree(item, dest)
+        
+        # Cleanup temp directory
+        shutil.rmtree(temp_extract_dir)
+        print(f"✓ Successfully extracted and merged data_sub into {data_dir}")
+        return True
+        
+    except Exception as e:
+        print(f"Error extracting data_sub.zip: {e}")
+        if temp_extract_dir.exists():
+            shutil.rmtree(temp_extract_dir)
+        return False
+
 class UniversalTrainer:
     def __init__(self, model, train_loader, val_loader, processor, optimizer, loss_fn, device='cpu', patience=10, input_type='spectrogram'):
         self.model = model.to(device)
