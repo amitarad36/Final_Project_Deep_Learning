@@ -322,13 +322,18 @@ def extract_data_sub_to_local(project_root, data_dir):
         # Cleanup temp directory
         shutil.rmtree(temp_extract_dir)
         print(f"✓ Successfully extracted and merged data_sub into {target_dir}")
-        return target_dir
         
     except Exception as e:
         print(f"Error extracting data_sub.zip: {e}")
         if temp_extract_dir.exists():
             shutil.rmtree(temp_extract_dir)
-        return target_dir
+    
+    # Ensure we always return a Path object
+    if not isinstance(target_dir, Path):
+        print(f"Warning: target_dir is {type(target_dir)}, converting to Path")
+        target_dir = Path(target_dir) if target_dir else Path("/content/local_data/data" if in_colab else data_dir)
+    
+    return target_dir
 
 class UniversalTrainer:
     def __init__(self, model, train_loader, val_loader, processor, optimizer, loss_fn, device='cpu', patience=10, input_type='spectrogram'):
