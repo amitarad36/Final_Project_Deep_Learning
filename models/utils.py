@@ -259,7 +259,7 @@ def extract_data_sub_to_local(project_root, data_dir):
         data_dir: Path to target data directory (ignored if in Colab)
     
     Returns:
-        bool: True if extraction succeeded, False otherwise
+        Path: The target directory path where data was extracted
     """
     import zipfile
     import shutil
@@ -285,7 +285,7 @@ def extract_data_sub_to_local(project_root, data_dir):
     if not data_sub_zip.exists():
         print(f"\ndata_sub.zip not found at {data_sub_zip}")
         print("Skipping data_sub extraction...")
-        return False
+        return target_dir
     
     print(f"\nExtracting data_sub.zip to {target_dir}...")
     
@@ -322,13 +322,13 @@ def extract_data_sub_to_local(project_root, data_dir):
         # Cleanup temp directory
         shutil.rmtree(temp_extract_dir)
         print(f"✓ Successfully extracted and merged data_sub into {target_dir}")
-        return True
+        return target_dir
         
     except Exception as e:
         print(f"Error extracting data_sub.zip: {e}")
         if temp_extract_dir.exists():
             shutil.rmtree(temp_extract_dir)
-        return False
+        return target_dir
 
 class UniversalTrainer:
     def __init__(self, model, train_loader, val_loader, processor, optimizer, loss_fn, device='cpu', patience=10, input_type='spectrogram'):
