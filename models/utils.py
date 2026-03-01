@@ -251,16 +251,34 @@ def extract_and_process_data(project_root, data_dir, musdb18_path, in_colab, fol
 def extract_data_sub_to_local(project_root, data_dir):
     """
     Extract data_sub.zip and merge its contents into the local data directory.
+    In Colab, uses /content/local_data for fast access.
+    In local environment, uses the provided data_dir.
     
     Args:
         project_root: Path to project root directory
-        data_dir: Path to target data directory
+        data_dir: Path to target data directory (ignored if in Colab)
     
     Returns:
         bool: True if extraction succeeded, False otherwise
     """
     import zipfile
     import shutil
+    
+    # Check if running in Colab
+    try:
+        import google.colab
+        in_colab = True
+    except:
+        in_colab = False
+    
+    # Determine target directory
+    if in_colab:
+        # Use local storage in Colab for fast access
+        target_dir = Path("/content/local_data/data")
+        target_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        # Use provided data_dir for local runs
+        target_dir = data_dir
     
     data_sub_zip = project_root / "data_sub.zip"
     
@@ -269,11 +287,15 @@ def extract_data_sub_to_local(project_root, data_dir):
         print("Skipping data_sub extraction...")
         return False
     
-    print(f"\nExtracting data_sub.zip to {data_dir}...")
+    print(f"\nExtracting data_sub.zip to {target_dir}...")
     
-    # Create a temporary extraction directory
-    temp_extract_dir = project_root / "temp_data_sub"
-    temp_extract_dir.mkdir(exist_ok=True)
+    # Create a temporary extraction directory (use /tmp in Colab for speed)
+    if in_colab:
+        temp_extract_dir = Path("/tmp/temp_data_sub")
+    else:
+        temp_extract_dir = project_root / "temp_data_sub"
+    
+    temp_extract_dir.mkdir(parents=True, exist_ok=True)
     
     try:
         # Extract the zip file
@@ -286,10 +308,10 @@ def extract_data_sub_to_local(project_root, data_dir):
             # Check if contents were extracted directly
             data_sub_source = temp_extract_dir
         
-        # Copy contents to DATA_DIR
+        # Copy contents to target directory
         for item in data_sub_source.iterdir():
             if item.is_dir():
-                dest = data_dir / item.name
+                dest = target_dir / item.name
                 print(f"  Copying {item.name} -> {dest}")
                 if dest.exists():
                     # Merge directories
@@ -299,7 +321,7 @@ def extract_data_sub_to_local(project_root, data_dir):
         
         # Cleanup temp directory
         shutil.rmtree(temp_extract_dir)
-        print(f"✓ Successfully extracted and merged data_sub into {data_dir}")
+        print(f"✓ Successfully extracted and merged data_sub into {target_dir}")
         return True
         
     except Exception as e:
