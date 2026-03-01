@@ -79,7 +79,6 @@ def setup_project_environment():
     
     DATA_DIR = PROJECT_ROOT / "data"
     CHECKPOINT_DIR = PROJECT_ROOT / "checkpoints"
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
     CHECKPOINT_DIR.mkdir(parents=True, exist_ok=True)
     
     if str(PROJECT_ROOT) not in sys.path:
