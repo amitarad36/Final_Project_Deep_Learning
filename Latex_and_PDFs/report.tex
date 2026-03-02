@@ -1,411 +1,90 @@
-\documentclass[11pt, a4paper]{article}
-\usepackage[utf8]{inputenc}
-\usepackage{geometry}
-\usepackage{titlesec}
-\usepackage{enumitem}
-\usepackage{hyperref}
-\usepackage{parskip}
-\usepackage{amsmath}
-\usepackage{amssymb}
+\documentclass{article}
 \usepackage{graphicx}
-\usepackage{caption}
-\usepackage{subcaption}
-\usepackage{algorithm}
-\usepackage{algpseudocode}
+\usepackage{amssymb}
+\usepackage{hyperref} 
 
-% Page margins
-\geometry{left=2.5cm, right=2.5cm, top=2.5cm, bottom=2.5cm}
+\usepackage[capitalize]{cleveref}
 
-% Title formatting
-\title{\textbf{Deep Music Source Separation} \\ 
-\large Winter 2026 Final Project Report}
-\author{Amit Arad \and Alom Malka}
-\date{March 5, 2026}
+
+
+\title{Deep Learning Final Project Report}
+\author{Alon Malka \and Amit Arad }
+\date{February 2026}
 
 \begin{document}
 
 \maketitle
 
 \begin{abstract}
-Music Source Separation (MSS) aims to isolate individual instrument stems from mixed audio recordings. This project implements and compares two neural network architectures for spectrogram-based vocal separation: a U-Net encoder-decoder and an LSTM-based baseline. Both models operate on log-magnitude spectrograms and employ curriculum learning across two stages (2→1 and 4→1 source separation). Our results demonstrate that the U-Net architecture outperforms the LSTM baseline in terms of separation quality metrics (SDR, SIR, SAR). We additionally propose future extensions including attention mechanisms and cross-singer voice transfer techniques.
+Music Source Separation (MSS) is the task of isolating an individual sound source from a mixed audio. This project implements and compares neural network architectures for spectrogram-based vocal separation: U-Net codecs and LSTM-based models. All operated on the log-magnitude spectrograms of the data and trained via curriculum learning ($2 \rightarrow 1$ into $4 \rightarrow 3$ source separation). Our results show that U-Net models outperform the LSTM baseline across all separation quality metrics (SDR, SIR, SAR). Additionally, we experimented with adding attention mechanisms to the Codec.
 \end{abstract}
+
 
 \section{Introduction}
 
-\subsection{Problem Statement}
-Music Source Separation (MSS) is the task of decomposing a mixed audio signal into its constituent sources (vocals, drums, bass, etc.). This has applications in music production, remixing, karaoke generation, and music information retrieval.
+Vocal separation is a sub-task of Music Source Separation (MSS), which means decomposing a mixed audio signal into its separate tracks (vocals, guitars, piano, etc.) It is still being researched and is our main objective in the final project.
+Our preliminary work was to examine recent works and research in the field. We concluded that most approaches use U-Nets or LSTMs based models to solve this problem. The idea is focuses on modeling an image-to-image mappings, where the input image is the spectrogram of the song and the output is a predicted mask, to be multiplied by the input mixture inorder to mask out the vocals. In our project, we decided to focus on the U-Net architecture, implementing a standard U-Net and comparing it with the LSTM model. Additionally, we tried equipping the resulting U-Net architecture with a multi-head attention block between the encoder and the decoder parts.
+Training was performed on a data set named "MUSDB18", a standard in the field. It contains approximately 10 hours on songs and their 4 different stems.
 
-\subsection{Our Approach}
-We implement and compare two frequency-domain (spectrogram-based) neural architectures:
-\begin{enumerate}
-    \item \textbf{U-Net (Our Implementation):} A 2D convolutional encoder-decoder with skip connections
-    \item \textbf{LSTM (Baseline from Literature):} A bidirectional LSTM with soft masking, adapted from prior work in spectrogram-based source separation
-\end{enumerate}
 
-\subsection{Overall Pipeline}
-Both models follow the same general approach:
-\begin{enumerate}
-    \item Convert audio waveform to \textbf{log-magnitude spectrogram} via STFT
-    \item Feed spectrogram through neural network to predict a \textbf{soft mask}
-    \item Apply mask in \textbf{linear domain}: $\hat{S}_{\text{linear}} = M \cdot \exp(X_{\text{log}})$
-    \item Convert back to \textbf{log domain} for loss computation: $\hat{S}_{\text{log}} = \log(1 + \hat{S}_{\text{linear}})$
-    \item Compute MSE loss: $\mathcal{L} = \text{MSE}(\hat{S}_{\text{log}}, Y_{\text{log}})$
-    \item Reconstruct waveform via inverse STFT using original phase
-\end{enumerate}
+\section{The Data}
+\subsection{Background}
+In digital signal processing (DSP), analyzing the raw time-domain signal $x[n]$ is usually inefficient. This is why the Discrete Fourier Transform (DFT) is being used: $$X[k] = \sum _{n=0} ^{N-1} x[n] \cdot e^{-i2\pi k \frac{n}{N}}$$ While the DFT reveals the frequency composition of a signal it lacks temporal resolution, actually it averages frequency across the time domain. To capture the frequency composition as a function of time, we use the STFT. By using a sliding window function $w[n]$, we calculate the Fourier transform for small segments of the signal:
 
-This approach (masking in linear domain, loss in log domain) balances numerical stability with perceptual quality.
+$$X[m,\omega] = \sum _{n=-\infty} ^{\infty} x[n]w[n-m]e^{-i\omega n} \in \mathbb{C}$$ 
 
-\subsection{Model Architectures}
+The magnitude of $X[m,w]$ is called the spectrogram (an illustration can be seen in \cref{fig:spectrogram}) it is common to omit the phase and use only the magnitude during analysis as it contains most of the energy of the signal and use the phase only in reconstruction.
 
-\subsubsection{Model A: U-Net (Our Implementation)}
-\textbf{Architecture:}
-\begin{itemize}
-    \item 5-layer encoder-decoder with skip connections
-    \item Base filters: 32, doubled at each downsampling layer
-    \item Batch normalization and dropout (p=0.1) for regularization
-    \item Input/Output: [Batch, 1, Freq, Time] spectrograms
-    \item Parameters: $\sim$1.2M
-\end{itemize}
+By converting audio into a spectrogram we essentially treat sounds as a 2D images. Thus enabling computer vision architectures taught in class, like CNNs and U-Nets for our task.
+\subsection{The Database}
+We used a database called MUSDB18 which is a standard in the field. It has approximately 10 hours of songs (signals). The signals are stereophonic and encoded at 44.1 kHz (songs on most popular music streaming are encoded at this rate). Each song has five tracks: vocals, drums, bass, 'other' and 'mixture' as can be seen in \cref{fig:musdbtracks}. Mixture is the song itself and is the input to the model and 'accompaniment' is the instruments without the vocals, which is what our model tries to predict.
 
-\textbf{Strengths:}
-\begin{itemize}
-    \item Skip connections preserve high-frequency details
-    \item 2D convolutions capture local time-frequency patterns
-    \item Well-suited for image-like spectrogram data
-\end{itemize}
+\subsection{Data processing}
+Working with sound can be tricky. The signals are sampled at 44.1kHz which means a simple 3 minute song is represented with $441000 \cdot 180 \approx 80 M $ samples which is a huge number. This is why some decisions need to be taken.
 
-\subsubsection{Model B: LSTM (Baseline from Literature)}
-\textbf{Architecture:}
-\begin{itemize}
-    \item 2-layer bidirectional LSTM
-    \item Hidden size: 512 per direction (1024 total)
-    \item Dropout (p=0.3) between LSTM layers
-    \item Input: Flattened frequency bins per time step
-    \item Output: Soft mask reshaped to spectrogram dimensions
-    \item Parameters: $\sim$800K
-\end{itemize}
+First, the data is down sampled by two, meaning we take each other sample. Next, we divide the song into 'batches' of 8 seconds with 4 seconds overlap, i.e., 16 seconds of a song will be divided into three batches, 0-8, 4-12, 8-16.
+Then, the STFT of a batch is being calculated, with frequency resolution of 1024 and sliding window size of 512 resulting in $1024 \times 344$ spectrograms that serve as own inputs to the model.
 
-\textbf{Strengths:}
-\begin{itemize}
-    \item Models temporal dependencies explicitly
-    \item Bidirectional context captures past and future frames
-    \item Fewer parameters than U-Net
-\end{itemize}
+\section{Models}
+\subsection{U-Net}
+Our focus for this project was the U-Net. Essentially, the U-Net follows an Encoder-Decoder (Codec) architecture. The encoder consists of down-sample convolutional blocks reducing spatial information. The decoder does the opposite with up-sample blocks. In addition, there are skip-connections that resemble a residual block, as can be seen in \cref{fig:U-Net}
 
-\textbf{Attribution:} This baseline architecture is adapted from the work presented in ``Source Separation \& Automatic Transcription,'' which proposed using LSTM networks for spectrogram-based music source separation. We implemented our own version and compared it against our U-Net design.
+\subsection{LSTM}
+For reference, we implemented an LSTM-based model that uses convolutional blocks in the hidden layers. 
+\subsection{U-Net + Multihead attention block}
+After implementing the U-Net model, we wanted to improve its performance. To do so, we decided to add multi-head attentional blocks.
 
-\section{Dataset \& Training}
+\section{Training}
+We experimented with curriculum learning, i.e., trained the model in two separate stages. The first was $2 \rightarrow 1$ source separation. The vocals + one other random track were merged and given as input. After 50 epoches, stage two was initialized with the task of $4 \rightarrow 1$ source separation. The model continued training with the weights it had from stage one.
 
-\subsection{MUSDB18-HQ Dataset}
-\begin{itemize}
-    \item Standard benchmark for music source separation
-    \item $\sim$150 professionally mixed tracks with isolated stems
-    \item Stems: Vocals, Drums, Bass, Other
-    \item Split: $\sim$100 train, $\sim$14 validation, $\sim$50 test
-    \item Sample rate: Downsampled to 22.05 kHz for computational efficiency
-\end{itemize}
+\section{Experiments}
 
-\subsection{Curriculum Learning Strategy}
-We employ a two-stage curriculum to improve convergence:
 
-\textbf{Stage 1: Simplified Task (2 → 1 sources)}
-\begin{itemize}
-    \item Input: Mixture of vocals + one random instrument (drums, bass, or other)
-    \item Target: Isolated vocals
-    \item Goal: Learn basic separation in a less crowded mixture
-    \item Chunk duration: 8 seconds with 4-second overlap
-\end{itemize}
 
-\textbf{Stage 2: Full Complexity (4 → 1 sources)}
-\begin{itemize}
-    \item Input: Full mixture (vocals + drums + bass + other)
-    \item Target: Isolated vocals
-    \item Initialization: Models warm-started with Stage 1 weights
-    \item Goal: Handle realistic separation scenarios
-\end{itemize}
 
-\subsection{Training Configuration}
-\begin{itemize}
-    \item Optimizer: Adam (lr=0.001)
-    \item Loss function: MSE in log domain
-    \item Batch size: LSTM=128, U-Net=32 (due to memory constraints)
-    \item Early stopping: Patience of 5 epochs on validation loss
-    \item Hardware: NVIDIA GPU with CUDA support
-\end{itemize}
+\begin{figure}
+    \centering
+    \includegraphics[width=1\linewidth]{Photos/Spectrogram.png}
+    \caption{Spectrogram of 'Angels in Amplifiers' from the dataset}
+    \label{fig:spectrogram}
+\end{figure}
 
-\section{Experimental Results}
 
-\subsection{Evaluation Metrics}
-We evaluate models on the held-out test set using the \texttt{museval} library:
-\begin{itemize}
-    \item \textbf{SDR (Signal-to-Distortion Ratio):} Overall separation quality (higher is better)
-    \item \textbf{SIR (Signal-to-Interference Ratio):} Suppression of interfering sources (higher is better)
-    \item \textbf{SAR (Signal-to-Artifacts Ratio):} Absence of artifacts/distortion (higher is better)
-\end{itemize}
 
-\subsection{Quantitative Results}
+\begin{figure}
+    \centering
+    \includegraphics[width=1\linewidth]{Photos/MUSDB.png}
+    \caption{MusDB18 tracks}
+    \label{fig:musdbtracks}
+\end{figure}
 
-\textbf{Preliminary findings} (detailed results to be added):
+\begin{figure}
+    \centering
+    \includegraphics[width=1\linewidth]{Photos/U-Net.png}
+    \caption{a U-Net architecture illustration}
+    \label{fig:U-Net}
+\end{figure}
 
-\begin{table}[h]
-\centering
-\caption{BSS Metrics on MUSDB18 Test Set}
-\begin{tabular}{|l|c|c|c|c|}
-\hline
-\textbf{Model} & \textbf{SDR (dB)} $\uparrow$ & \textbf{SIR (dB)} $\uparrow$ & \textbf{SAR (dB)} $\uparrow$ & \textbf{Params} \\
-\hline
-LSTM (Stage 1) & TBD & TBD & TBD & 800K \\
-U-Net (Stage 1) & TBD & TBD & TBD & 1.2M \\
-\hline
-LSTM (Stage 2) & TBD & TBD & TBD & 800K \\
-U-Net (Stage 2) & TBD & TBD & TBD & 1.2M \\
-\hline
-\end{tabular}
-\end{table}
 
-\textbf{Key Observations:}
-\begin{itemize}
-    \item U-Net demonstrates superior performance over LSTM baseline
-    \item Curriculum learning (Stage 1 → Stage 2) improves convergence
-    \item Skip connections in U-Net help preserve high-frequency vocal details
-    \item LSTM shows competitive results despite fewer parameters
-\end{itemize}
-
-\subsection{Qualitative Analysis}
-\begin{itemize}
-    \item \textbf{Spectrogram visualization:} U-Net produces cleaner separated spectrograms with less residual interference
-    \item \textbf{Audio quality:} Both models successfully isolate vocals, but U-Net exhibits fewer artifacts
-    \item \textbf{Phase reconstruction:} Using original mixture phase allows reasonable waveform reconstruction despite operating in magnitude-only domain
-\end{itemize}
-
-\section{Future Work}
-
-\subsection{Phase 2: Attention Mechanism Enhancement}
-\textbf{Motivation:} Multi-head self-attention can capture long-range dependencies better than LSTMs, potentially improving separation of repetitive musical structures (drum patterns, bass lines).
-
-\textbf{Proposed Architecture:}
-\begin{itemize}
-    \item Integrate multi-head self-attention into U-Net bottleneck
-    \item Add positional encodings to preserve temporal information
-    \item Compare: U-Net vs U-Net+Attention vs LSTM
-\end{itemize}
-
-\textbf{Expected Benefits:}
-\begin{itemize}
-    \item Global receptive field across entire spectrogram
-    \item Improved modeling of periodic structures
-    \item Better handling of polyphonic content
-\end{itemize}
-
-\subsection{Phase 3: Cross-Singer Voice Transfer}
-\textbf{Goal:} Generate vocal stems with different singers' characteristics while preserving melody and lyrics.
-
-\textbf{Example Applications:}
-\begin{itemize}
-    \item Mark Knopfler singing a Beatles song (A→B)
-    \item The Beatles covering a Mark Knopfler song (B→A)
-\end{itemize}
-
-\textbf{Proposed Approach:}
-\begin{enumerate}
-    \item \textbf{Step 1:} Use trained MSS model to extract vocals from both artists' songs
-    \item \textbf{Step 2:} Train voice conversion model (CycleGAN, AutoVC, or similar) on extracted vocals
-    \item \textbf{Step 3:} Apply conversion to generate cross-singer renditions
-    \item \textbf{Step 4:} Remix converted vocals with original accompaniment
-\end{enumerate}
-
-\textbf{Evaluation:}
-\begin{itemize}
-    \item Subjective listening tests for quality and identity preservation
-    \item Objective metrics: MCD (Mel-Cepstral Distortion), F0 correlation
-    \item Comparison with baseline voice conversion approaches
-\end{itemize}
-
-\section{Not Our Work - Acknowledgments and Attribution}
-
-\subsection{LSTM Baseline Architecture}
-The LSTM-based model used as our baseline is adapted from the work presented in:
-
-\textbf{``Source Separation \& Automatic Transcription''}
-
-\textbf{What we took:}
-\begin{itemize}
-    \item The core idea of applying bidirectional LSTM to spectrogram-based music source separation
-    \item The concept of using soft masking in the spectrogram domain for source isolation
-    \item Inspiration for the recurrent bottleneck architecture
-\end{itemize}
-
-\textbf{Our implementation and contributions:}
-\begin{itemize}
-    \item We implemented our own version with curriculum learning strategy
-    \item We compared it against our U-Net architecture (not present in the original work)
-    \item We conducted comprehensive evaluation with BSS metrics
-    \item Our results demonstrate that U-Net outperforms the LSTM baseline in terms of SDR, SIR, and SAR metrics (detailed quantitative comparison to be added upon completion of evaluation)
-\end{itemize}
-
-\textbf{Note:} While the LSTM concept came from prior work, the specific implementation, training strategy, and comparative analysis are our original contributions to this project.
-
-\subsection{Dataset}
-\textbf{MUSDB18-HQ:}
-\begin{itemize}
-    \item Rafii, Z., Liutkus, A., Stöter, F. R., Mimilakis, S. I., \& Bittner, R. (2017). 
-    \item MUSDB18-HQ - an uncompressed version of MUSDB18. \textit{Zenodo}.
-    \item \url{https://doi.org/10.5281/zenodo.1438122}
-\end{itemize}
-
-\subsection{Software Libraries}
-\begin{itemize}
-    \item \textbf{PyTorch:} Paszke, A., et al. (2019). PyTorch: An Imperative Style, High-Performance Deep Learning Library. \textit{NeurIPS}.
-    \item \textbf{musdb:} Python parser for MUSDB18 dataset
-    \item \textbf{museval:} BSS evaluation metrics (SDR, SIR, SAR)
-    \item \textbf{librosa:} Audio processing and feature extraction
-\end{itemize}
-
-\section{Conclusion}
-We implemented and compared two neural architectures for music source separation: a U-Net encoder-decoder and an LSTM baseline adapted from prior work. Both models operate on log-magnitude spectrograms and employ curriculum learning. Our preliminary results indicate that U-Net outperforms LSTM on standard BSS metrics, demonstrating the effectiveness of convolutional architectures with skip connections for spectrogram-based separation.
-
-Future work will explore attention mechanisms for improved long-range modeling and cross-singer voice transfer for creative music production applications.
-
-\subsection{Code Availability}
-All code and trained models are available at: \\
-\url{https://github.com/amitarad36/Final_Project_Deep_Learning}
-
-\newpage
-
-\title{\vspace{2cm}\Huge\textbf{Neural Audio Linearizer} \\ [1cm]
-\Large Zero-Shot Voice Conversion Pipeline Specification}
-
-\maketitle
-
-\section{Overview}
-This document specifies the architecture for a \textbf{Zero-Shot Voice Conversion} system based on the principles of Manifold Straightening (Linearization). The system disentangles content and style by mapping audio into a latent space where style transfer becomes a simple linear transformation:
-$$ f(x, w_{style}) = g^{-1}( A(w_{style}) \cdot g(x) ) $$
-where $g$ is an Invertible Neural Network (INN) and $A$ is a transformation matrix generated by a Hypernetwork.
-
-\section{Prerequisites \& Dependencies}
-Before implementation, ensure the following libraries and models are acquired.
-
-\subsection{Python Libraries}
-\begin{itemize}
-    \item \texttt{torch}, \texttt{torchaudio} (Core framework)
-    \item \texttt{transformers} (HuggingFace for pre-trained models)
-    \item \texttt{librosa} (Audio processing)
-    \item \texttt{musdb} (Dataset for training)
-    \item \texttt{soundfile} (High-quality audio I/O)
-\end{itemize}
-
-\subsection{Pre-trained Models (Frozen)}
-These models must be downloaded and set to \texttt{eval()} mode with \texttt{requires\_grad=False}.
-\begin{enumerate}
-    \item \textbf{Separation:} Custom U-Net + Attention (``Unettention'') trained on MUSDB18.
-    \item \textbf{Style Encoder:} \texttt{microsoft/wavlm-base-plus-sv} (or GE2E). Output dim: 256.
-    \item \textbf{Content Critic:} \texttt{facebook/wav2vec2-base-960h}. Extracts phoneme representations.
-\end{enumerate}
-
-\section{Pipeline Architecture}
-
-\subsection{Phase 1: Input Preparation}
-\textbf{Input:} Raw Audio $x_{raw} \in \mathbb{R}^{T}$.
-\begin{enumerate}
-    \item \textbf{Separation:} Use Unettention to isolate vocals $v$.
-    \item \textbf{Slicing:} Cut $v$ into overlapping chunks of $T=16$s (Sample rate 22050Hz).
-    \item \textbf{Spectrogram:} Compute STFT. Shape: $(1, F, T) \approx (1, 1024, 64)$.
-    \item \textbf{Squeeze (Space-to-Depth):} Reshape $2 \times 2$ patches into channels.
-    $$ \text{Input: } (B, 1, 1024, 64) \xrightarrow{\text{Squeeze}} \text{Output: } (B, 4, 512, 32) $$
-\end{enumerate}
-
-\subsection{Phase 2: The Linearizer Core ($g$ and $H$)}
-The core consists of a shared Invertible Network $g$ and a Hypernetwork $H$.
-
-\subsubsection{The Invertible Encoder ($g$)}
-Structure: Sequence of 6 \textbf{Affine Coupling Blocks}.
-\begin{itemize}
-    \item \textbf{Input:} $x \in \mathbb{R}^{4 \times H \times W}$.
-    \item \textbf{Step 1 (Split):} Divide channels into $x_a$ (Ch 0,1) and $x_b$ (Ch 2,3).
-    \item \textbf{Step 2 (Condition):} $s, t = \text{CNN}(x_a)$. ($s=$ Scale, $t=$ Shift).
-    \item \textbf{Step 3 (Transform):} $y_b = x_b \cdot \exp(\tanh(s)) + t$.
-    \item \textbf{Step 4 (Mix):} Concatenate $(x_a, y_b)$ and shuffle channels (or 1x1 Conv).
-\end{itemize}
-\textbf{Output:} Latent code $z = g(x)$.
-
-\subsubsection{The Hypernetwork ($H$)}
-\begin{itemize}
-    \item \textbf{Input:} Style Vector $w \in \mathbb{R}^{256}$ (from WavLM).
-    \item \textbf{Architecture:} 3-Layer MLP (Linear $\to$ ReLU $\to$ Linear $\to$ ReLU $\to$ Linear).
-    \item \textbf{Output:} Flattened Matrix weights.
-    \item \textbf{Reshape:} $A \in \mathbb{R}^{C \times C}$ (e.g., $4 \times 4$ applied per-pixel, or larger if global).
-\end{itemize}
-
-\subsubsection{Linear Transformation}
-$$ z_{new} = A \cdot z $$
-This rotates the content vector $z$ into the target speaker's manifold.
-
-\subsubsection{The Invertible Decoder ($g^{-1}$)}
-Uses the exact same weights as $g$, but runs the Coupling Blocks in reverse:
-$$ x_b = (y_b - t) \cdot \exp(-\tanh(s)) $$
-
-\section{Training Strategy}
-
-\subsection{Loss Functions}
-Total Loss $\mathcal{L} = \lambda_1 \mathcal{L}_{rec} + \lambda_2 \mathcal{L}_{content} + \lambda_3 \mathcal{L}_{style}$.
-
-\begin{enumerate}
-    \item \textbf{Reconstruction Loss ($\mathcal{L}_{rec}$):}
-    Only used when Source == Target.
-    $$ \mathcal{L}_{rec} = || x_{input} - x_{generated} ||^2_2 $$
-    
-    \item \textbf{Content Loss ($\mathcal{L}_{content}$):}
-    Ensures linguistic content is preserved.
-    $$ \mathcal{L}_{content} = || \text{wav2vec}(x_{generated}) - \text{wav2vec}(x_{source}) ||_1 $$
-    
-    \item \textbf{Style Loss ($\mathcal{L}_{style}$):}
-    Ensures timbre matches the target.
-    $$ \mathcal{L}_{style} = 1 - \cos(\text{WavLM}(x_{generated}), \text{WavLM}(x_{target})) $$
-\end{enumerate}
-
-\subsection{Training Loop (Pseudocode)}
-\nopagebreak
-\begin{algorithm}[H]
-\caption{Two-Stage Training Procedure}
-\begin{algorithmic}[1]
-\State Initialize $g$, Hypernetwork $H$. Freeze WavLM, wav2vec.
-\State \textbf{Phase 1: Warm-Up (Identity Only)}
-\For{$batch$ in DataLoader}
-    \State Source, Target $\gets$ Same Audio Chunk
-    \State $w \gets$ WavLM(Target)
-    \State $z \gets g(Source)$
-    \State $A \gets H(w)$
-    \State $Out \gets g^{-1}(A \cdot z)$
-    \State Loss $\gets$ MSE($Out$, Source)
-    \State Backprop \& Update
-\EndFor
-\State \textbf{Phase 2: Disentanglement (Mixed)}
-\For{$batch$ in DataLoader}
-    \State Randomly select task: \textbf{Identity} (50\%) or \textbf{Conversion} (50\%)
-    \If{Identity}
-        \State (Same as Phase 1)
-    \Else
-        \State Source $\gets$ Singer A
-        \State Target $\gets$ Singer B (Different file)
-        \State $Out \gets$ Pipeline(Source, Target)
-        \State Loss $\gets \mathcal{L}_{content}(Out, A) + \mathcal{L}_{style}(Out, B)$
-    \EndIf
-    \State Backprop \& Update
-\EndFor
-\end{algorithmic}
-\end{algorithm}
-
-\section{Inference (Generation)}
-To generate the final song:
-\begin{enumerate}
-    \item Extract vocals from Source Song (e.g., Beatles).
-    \item Extract vocals from Reference Song (e.g., Knopfler).
-    \item Compute Style Vector $w_{ref}$ once (using average of multiple Knopfler frames).
-    \item Process Source Vocals in 16s chunks (8s overlap) through the pipeline.
-    \item \textbf{Overlap-Add:} Cross-fade chunks to reconstruct full vocal track.
-    \item \textbf{Mix:} Add generated vocals to original Beatles instrumental.
-\end{enumerate}
 
 \end{document}
-
-

@@ -1,10 +1,9 @@
 """
 Models
 Here we define the architectures for our source separation models, including:
-- Model A: U-Net (2D Convolutional Architecture)
-- Model A: LSTM-Based Masking (Sequential Architecture)
-- Attention-Based U-Net (U-Net with Multi-Head Attention at Bottleneck)
-and several configuration functions to easily instantiate these models with predefined settings.
+- Model: U-Net (2D Convolutional Architecture)
+- Model: LSTM-Based Masking (Sequential Architecture)
+- Model: Attention-Based U-Net (U-Net with Multi-Head Attention at Bottleneck)
 
 Authors: Amit & Alon
 Date: January 2026
@@ -99,7 +98,6 @@ class TimeFrequencyDomainUNet(nn.Module):
         x = self.sigmoid(self.final_conv(x))
         return x[:, :, :h, :w]
 
-
 class MultiHeadSelfAttention2D(nn.Module):
 
     def __init__(self, in_channels, num_heads=4, dropout=0.1):
@@ -189,7 +187,6 @@ class UNetAttention(nn.Module):
 
         x = self.sigmoid(self.final_conv(x))
         return x[:, :, :h, :w]
-
 
 class SpectrogramMaskingLSTM(nn.Module):
 
