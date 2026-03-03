@@ -22,15 +22,24 @@ Music Source Separation (MSS) is the task of isolating an individual sound sourc
 
 \section{Introduction}
 Vocal separation is a sub-task of Music Source Separation (MSS), which means decomposing a mixed audio signal into its separate tracks (vocals, guitars, piano, etc.) It is still being researched and is our main objective in the final project.
-Our preliminary work was to examine recent works and research in the field. We concluded that most approaches use U-Nets or LSTMs based models to solve this problem. The idea focuses on modeling image-to-image mappings, where the input image is the spectrogram of the song and the output is a predicted mask, to be multiplied by the input mixture in order to mask out the vocals. In our project, we decided to focus on the U-Net architecture, implementing a standard U-Net and comparing it with the LSTM model. Additionally, we tried equipping the resulting U-Net architecture with a multi-head attention block between the encoder and the decoder parts.
+Our preliminary work was to examine recent works and research in the field. We concluded that many approaches benefit from using U-Nets or LSTMs based models to solve this problem. The idea focuses on modeling image-to-image mappings, where the input image is the spectrogram of the song and the output is a predicted mask, to be multiplied by the input mixture in order to mask out the vocals. In our project, we decided to focus on the U-Net architecture, implementing a standard U-Net and comparing it with the LSTM model. Additionally, we tried equipping the U-Net architecture with a multi-head attention block between the encoder and the decoder parts.
 Training was performed on a data set named "MUSDB18", a standard in the field. It contains approximately 10 hours of songs and their 4 different stems.
 
 \section{Related Work}
-The first work, of Derby et al. \cite{derby2024source}, motivated working with mask-based approaches for music source separation. 
+The first work, of Derby et al. \cite{derby2024source}, motivated working with mask-based approaches for music source separation. In their paper, they tackle 2 main problems, the one we are concerned with is MSS. We adapted their LSTM-based approch as a baseline model, and tried to outperform it. Moreover, we discovered that our initial idea of predicting a mask (and not the spectrogram itself) was also used by both Derby et al. \cite{derby2024source} and Gupta et al. \cite{gupta2024continual}. The work of Gupta et al. \cite{gupta2024continual} served also as somewhat of a reference, as they also tackled voice seperation with a U-net based model, but with the aid of human feedback mid-training, called Human In The Loop (HITL).
 
+\subsection{Our Focus}
+We chose to tackle the opposite problem of the one tackled by Derby et al. \cite{derby2024source}, isolating the accompaniment from the vocals. The first part of the runnable notebook features a comparison between a bidirectional LSTM-based model and our U-Net architecture. The second part of the notebook examines a different approach from Gupta et al. \cite{gupta2024continual} HITL, adding a multi-head attention block to the U-Net architecture. For the models to be able to run inference on variyng duration songs, we trained them on 8 second chunks of the songs, with 4 seconds overlap. We experimented with curriculum learning, i.e., trained all of the models in two seperate stages, which are explained in the training section of the methodology.
+
+\begin{figure}
+    \centering
+    \includegraphics[width=0.7\linewidth]{Photos/Spectrogram.png}
+    \caption{Spectrogram of 'Angels in Amplifiers' from the dataset}
+    \label{fig:spectrogram}
+\end{figure}
 
 \section{Methodology}
-In this section we will describe the ideas that led us to the specific architectures we implemented, the main pipline and flow of the project. Naturally, we started with the data and the way we processed it, then we moved to the models and training.
+In this section, we will converse some mathematical background behind signal processing, that led us to the specific architectures we implemented, the main pipeline and flow of the project. Naturally, we start with the data and the way we processed it, then we move to the models and training.
 
 \subsection{The Data}
 \paragraph{Background}
@@ -43,6 +52,14 @@ By converting audio into a spectrogram we essentially reduce the task to process
 \paragraph{The Data Set}
 We used a database called MUSDB18 which is a standard in the field. It has approximately 10 hours of songs (signals). The signals are stereophonic and encoded at 44.1 kHz (songs on most popular music streaming are encoded at this rate). Each song has five tracks (stems): 'vocals', 'drums', 'bass', 'other' and 'mixture' as can be seen in \cref{fig:musdbtracks}. As input, we take a linear combination of these 4 stems (the initial idea, which was later abandoned, was to assign changing weight ratios as the coefficients of this linear combination in order for the model to be more robust when facing various types of songs), and as for the output, we predict a mask of the same input size (with values ranging from 0 to 1), that is to be multiplied by the input spectrogram elementwise to isolate the vocals.
 
+\begin{figure}
+    \centering
+    \includegraphics[width=0.7\linewidth]{Photos/MUSDB.png}
+    \caption{MUSDB18 tracks}
+    \label{fig:musdbtracks}
+\end{figure}
+
+
 \paragraph{Data processing}
 Working with audio files can be challenging due to their size. For a simple 3 minutes song sampled at 44.1kHz, one must allocate memory space proportional to $44100 \cdot 180 \approx 8 M $  which is huge. To overcome this, we downsample the audio by a factor of 2 , converting it to 22.05kHz.
 We then split the musdb18 songs into chunks of 8 seconds with 4 seconds overlap, i.e., some 16 seconds of a song will be divided into three batches, 0-8, 4-12, 8-16.
@@ -52,6 +69,8 @@ Then, the STFT of a chunk is being calculated, with $n\_fft = 2048$ and $hop\_le
 \paragraph{U-Net}
 Our main model in this project was the U-Net. As mentioned, the idea is the via signal processing tools, we convert the task to image-to-image translation, hence it was natural to use a convolutional based architecture. Essentially, the U-Net follows an Encoder-Decoder (Codec) architecture. The encoder consists of down-sample convolutional blocks reducing spatial information. The decoder does the opposite with up-sample blocks. In addition, between each layer we added skip-connections that resemble a residual block, as can be seen in \cref{fig:U-Net}, to allow the model to learn the identity mapping.
 
+
+
 \paragraph{LSTM}
 The baseline architecture was taken from the work of Derby et al. \cite{derby2024source}. Using torch library, we implemented a bidirectional LSTM-based model, feeding it with the spectrograms as sequential input. 
 \paragraph{U-Net + Multihead attention block}
@@ -59,35 +78,22 @@ After implementing the U-Net model, we wanted to improve its performance. To do 
 
 \subsection{Training}
 We experimented with curriculum learning, i.e., trained the model in two separate stages. The first was $2 \rightarrow 1$ source separation. The vocals + one other random track were merged and given as input. After 50 epochs, stage two was initialized with the task of $4 \rightarrow 1$ source separation. The model continued training with the weights it had from stage one.
-
+\begin{figure}
+    \centering
+    \includegraphics[width=0.7\linewidth]{Photos/U-Net.png}
+    \caption{The U-Net architecture illustrated. The encoder and decoder are connected via skip connections.}
+    \label{fig:U-Net}
+\end{figure}
 \section{Experiments}
 
 \section{Work Report}
 
 
 
-\begin{figure}
-    \centering
-    \includegraphics[width=1\linewidth]{Photos/Spectrogram.png}
-    \caption{Spectrogram of 'Angels in Amplifiers' from the dataset}
-    \label{fig:spectrogram}
-\end{figure}
 
 
 
-\begin{figure}
-    \centering
-    \includegraphics[width=1\linewidth]{Photos/MUSDB.png}
-    \caption{MUSDB18 tracks}
-    \label{fig:musdbtracks}
-\end{figure}
 
-\begin{figure}
-    \centering
-    \includegraphics[width=1\linewidth]{Photos/U-Net.png}
-    \caption{The U-Net architecture illustrated. The encoder and decoder are connected via skip connections.}
-    \label{fig:U-Net}
-\end{figure}
 
 \begin{thebibliography}{2}
 

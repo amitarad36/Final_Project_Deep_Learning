@@ -1,4 +1,4 @@
-This is pdfTeX, Version 3.141592653-2.6-1.40.25 (MiKTeX 24.1) (preloaded format=pdflatex 2025.12.9)  3 MAR 2026 11:26
+This is pdfTeX, Version 3.141592653-2.6-1.40.25 (MiKTeX 24.1) (preloaded format=pdflatex 2025.12.9)  3 MAR 2026 17:04
 entering extended mode
  restricted \write18 enabled.
  %&-line parsing enabled.
@@ -306,49 +306,54 @@ File: umsb.fd 2013/01/14 v3.01 AMS symbols B
 [1
 
 {C:/Users/amita/AppData/Local/MiKTeX/fonts/map/pdftex/pdftex.map}]
-Overfull \hbox (6.3683pt too wide) in paragraph at lines 37--37
+<Photos/Spectrogram.png, id=58, 697.10437pt x 353.06906pt>
+File: Photos/Spectrogram.png Graphic file (type png)
+<use Photos/Spectrogram.png>
+Package pdftex.def Info: Photos/Spectrogram.png  used on input line 36.
+(pdftex.def)             Requested size: 241.49895pt x 122.31537pt.
+
+Overfull \hbox (6.3683pt too wide) in paragraph at lines 46--46
  []\OT1/cmr/bx/n/10 Background[] \OT1/cmr/m/n/10 In dig-i-tal sig-nal pro-cess-
 ing (DSP), an-a-lyz-ing the raw time-domain
  []
 
-[2]
-Overfull \hbox (0.17297pt too wide) in paragraph at lines 58--59
+[2 <./Photos/Spectrogram.png>]
+<Photos/MUSDB.png, id=72, 674.52pt x 380.17032pt>
+File: Photos/MUSDB.png Graphic file (type png)
+<use Photos/MUSDB.png>
+Package pdftex.def Info: Photos/MUSDB.png  used on input line 57.
+(pdftex.def)             Requested size: 241.49895pt x 136.11288pt.
+ [3]
+Overfull \hbox (0.17297pt too wide) in paragraph at lines 77--78
  []\OT1/cmr/bx/n/10 U-Net + Mul-ti-head at-ten-tion block[] \OT1/cmr/m/n/10 Af-
 ter im-ple-ment-ing the U-Net model,
  []
 
-<Photos/Spectrogram.png, id=70, 697.10437pt x 353.06906pt>
-File: Photos/Spectrogram.png Graphic file (type png)
-<use Photos/Spectrogram.png>
-Package pdftex.def Info: Photos/Spectrogram.png  used on input line 71.
-(pdftex.def)             Requested size: 345.0pt x 174.7347pt.
-<Photos/MUSDB.png, id=72, 674.52pt x 380.17032pt>
-File: Photos/MUSDB.png Graphic file (type png)
-<use Photos/MUSDB.png>
-Package pdftex.def Info: Photos/MUSDB.png  used on input line 80.
-(pdftex.def)             Requested size: 345.0pt x 194.45279pt.
-<Photos/U-Net.png, id=73, 1405.25pt x 598.235pt>
+<Photos/U-Net.png, id=89, 1405.25pt x 598.235pt>
 File: Photos/U-Net.png Graphic file (type png)
 <use Photos/U-Net.png>
-Package pdftex.def Info: Photos/U-Net.png  used on input line 87.
-(pdftex.def)             Requested size: 345.0pt x 146.86552pt.
-[3] [4 <./Photos/Spectrogram.png> <./Photos/MUSDB.png>] [5 <./Photos/U-Net.png>
-] (report.aux)
+Package pdftex.def Info: Photos/U-Net.png  used on input line 83.
+(pdftex.def)             Requested size: 241.49895pt x 102.80313pt.
+[4 <./Photos/MUSDB.png>] [5 <./Photos/U-Net.png>] (report.aux)
  ***********
 LaTeX2e <2023-11-01> patch level 1
 L3 programming layer <2024-01-04>
  ***********
+
+
+LaTeX Warning: Label(s) may have changed. Rerun to get cross-references right.
+
 Package rerunfilecheck Info: File `report.out' has not changed.
-(rerunfilecheck)             Checksum: 1042337BBB95E651A0E675C5CB8797CC;790.
+(rerunfilecheck)             Checksum: 65AC238FE67B1CDA632FB95602992C8C;895.
  ) 
 Here is how much of TeX's memory you used:
- 10729 strings out of 474486
- 179339 string characters out of 5743755
- 1934542 words of memory out of 5000000
- 32885 multiletter control sequences out of 15000+600000
+ 10731 strings out of 474486
+ 179369 string characters out of 5743755
+ 1936542 words of memory out of 5000000
+ 32886 multiletter control sequences out of 15000+600000
  567785 words of font info for 74 fonts, out of 8000000 for 9000
  1141 hyphenation exceptions out of 8191
- 75i,6n,79p,853b,570s stack positions out of 10000i,1000n,20000p,200000b,200000s
+ 75i,7n,79p,853b,566s stack positions out of 10000i,1000n,20000p,200000b,200000s
 <C:/Users/amita/AppData/Local/Programs/MiKTeX/fonts/type1/public/amsfonts/cm/
 cmbx10.pfb><C:/Users/amita/AppData/Local/Programs/MiKTeX/fonts/type1/public/ams
 fonts/cm/cmbx12.pfb><C:/Users/amita/AppData/Local/Programs/MiKTeX/fonts/type1/p
@@ -367,9 +372,9 @@ public/amsfonts/cm/cmsy10.pfb><C:/Users/amita/AppData/Local/Programs/MiKTeX/fon
 ts/type1/public/amsfonts/cm/cmsy7.pfb><C:/Users/amita/AppData/Local/Programs/Mi
 KTeX/fonts/type1/public/amsfonts/cm/cmsy9.pfb><C:/Users/amita/AppData/Local/Pro
 grams/MiKTeX/fonts/type1/public/amsfonts/symbols/msbm10.pfb>
-Output written on report.pdf (5 pages, 930901 bytes).
+Output written on report.pdf (5 pages, 933857 bytes).
 PDF statistics:
- 168 PDF objects out of 1000 (max. 8388607)
- 26 named destinations out of 1000 (max. 500000)
- 80 words of extra memory for PDF output out of 10000 (max. 10000000)
+ 177 PDF objects out of 1000 (max. 8388607)
+ 27 named destinations out of 1000 (max. 500000)
+ 88 words of extra memory for PDF output out of 10000 (max. 10000000)
 
