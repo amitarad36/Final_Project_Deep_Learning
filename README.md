@@ -102,17 +102,10 @@ Open `mainNB.ipynb` and run cells sequentially:
 5. **Evaluation** - Compute BSS metrics (SDR/SIR/SAR) and generate audio samples
 
 ### Inference on Custom Audio
+
 ```python
 # Upload your song to data/user_uploads/
-utils.compare_models_on_audio_file(
-    file_path='path/to/song.wav',
-    model_lstm=model_lstm,
-    model_unet=model_unet,
-    processor_lstm=processor_lstm,
-    processor_unet=processor_unet,
-    device='cuda',
-    sr=22050
-)
+utils.evaluate_models_on_audio_file(file_path='path/to/song.wav', model_list=, shared_config=, general_config=)
 ```
 
 ---

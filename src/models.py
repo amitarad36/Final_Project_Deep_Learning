@@ -138,6 +138,7 @@ class MultiHeadSelfAttention2D(nn.Module):
 
         return self.norm(x + out)
 
+
 class UNetAttention(nn.Module):
 
     def __init__(self, in_channels=1, out_channels=1, base_filters=32, num_layers=4, num_heads=4, batchnorm=True, dropout=0.1):

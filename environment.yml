@@ -1,6 +1,7 @@
 name: final-dl-env
 channels:
   - pytorch
+  - nvidia
   - conda-forge
   - defaults
 dependencies:
@@ -8,7 +9,7 @@ dependencies:
   - pytorch
   - torchvision
   - torchaudio
-  - cpuonly
+  - pytorch-cuda=11.8
   - numpy
   - matplotlib
   - scipy
@@ -19,13 +20,9 @@ dependencies:
   - ffmpeg
   - pip
   - pip:
+    - transformers
     - musdb
     - stempeg
     - tqdm
     - soundfile
-    - ipython
-    - ipykernel
-    - notebook
-    - ipywidgets
-    - ipython-genutils
-    - widgetsnbextension
+    - museval
