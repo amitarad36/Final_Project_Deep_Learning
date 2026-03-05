@@ -26,10 +26,10 @@ Our preliminary work was to examine recent works and research in the field. We c
 Training was performed on a data set named "MUSDB18", a standard in the field. It contains approximately 10 hours of songs and their 4 different stems.
 
 \section{Related Work}
-The first work, of Derby et al. \cite{derby2024source}, motivated working with mask-based approaches for music source separation. In their paper, they tackle 2 main problems, the one we are concerned with is MSS. We adapted their LSTM-based approch as a baseline model, and tried to outperform it. Moreover, we discovered that our initial idea of predicting a mask (and not the spectrogram itself) was also used by both Derby et al. \cite{derby2024source} and Gupta et al. \cite{gupta2024continual}. The work of Gupta et al. \cite{gupta2024continual} served also as somewhat of a reference, as they also tackled voice seperation with a U-net based model, but with the aid of human feedback mid-training, called Human In The Loop (HITL).
+The work of Derby et al. \cite{derby2024source} motivated working in a mask-predicting approach. In their paper, they tackle 2 main problems, the one we are concerned with is MSS. We adapted their LSTM-based model as a baseline architecture, and tried to outperform it (we didn't directly use their model, but implemented an architecture that follows the same approach using $torch$). Moreover, we discovered that our initial idea of predicting a mask (and not the spectrogram itself) was also used by Derby et al. \cite{derby2024source}. 
 
 \subsection{Our Focus}
-We chose to tackle the opposite problem of the one tackled by Derby et al. \cite{derby2024source}, isolating the accompaniment from the vocals. The first part of the runnable notebook features a comparison between a bidirectional LSTM-based model and our U-Net architecture. The second part of the notebook examines a different approach from Gupta et al. \cite{gupta2024continual} HITL, adding a multi-head attention block to the U-Net architecture. For the models to be able to run inference on variyng duration songs, we trained them on 8 second chunks of the songs, with 4 seconds overlap. We experimented with curriculum learning, i.e., trained all of the models in two seperate stages, which are explained in the training section of the methodology.
+We chose to tackle the complementary problem of the one Derby et al. \cite{derby2024source} were addressing, isolating the accompaniment from the vocals. The first part of the runnable notebook features a comparison between a bidirectional LSTM-based model and our U-Net architecture. The second part of the notebook examines an improvement to the U-Net model, adding a multi-head attention block to the U-Net architecture. For the models to be able to run inference on varying duration songs, we trained them on 8 second chunks of the songs, with 4 seconds overlap. We experimented with curriculum learning, i.e., trained all of the models in two separate stages, which are explained in the training section of the methodology.
 
 \begin{figure}
     \centering
@@ -43,7 +43,7 @@ In this section, we will converse some mathematical background behind signal pro
 
 \subsection{The Data}
 \paragraph{Background}
-In digital signal processing (DSP), analyzing the raw time-domain signal $x[n]$ is usually inefficient. This is why the Discrete Fourier Transform (DFT) is being used: $$X[k] = \sum _{n=0} ^{N-1} x[n] \cdot e^{-i2\pi k \frac{n}{N}}$$ While the DFT reveals the frequency composition of a signal it lacks temporal resolution, since it averages frequency across the time domain. To capture the frequency composition as a function of time, we use the STFT. By using a sliding window function $w[n]$, we calculate the Fourier transform for small segments of the signal:
+In digital signal processing (DSP), analyzing the raw time-domain signal $x[n]$ is usually inefficient. This is why the Discrete Fourier Transform (DFT) is being used: $$X[k] = \sum _{n=0} ^{N-1} x[n] \cdot e^{-i2\pi k \frac{n}{N}}$$ While the DFT reveals the frequency composition of a signal it lacks temporal resolution, since it averages frequency across the time domain. To capture the frequency composition as a function of time, we use the Short-Time Fourier Transform (STFT). By using a sliding window function $w[n]$, we calculate the Fourier transform for small segments of the signal:
 
 $$X[m,k] = \sum _{n=0} ^{N-1} x[n + m \cdot H] \cdot w[n]e^{-i2\pi k \frac{n}{N}} \in \mathbb{C}$$ 
 
@@ -66,15 +66,16 @@ We then split the musdb18 songs into chunks of 8 seconds with 4 seconds overlap,
 Then, the STFT of a chunk is being calculated, with $n\_fft = 2048$ and $hop\_length = 512$, resulting in a $1025 \times 341$ spectrograms that serve as input to the model.
 
 \subsection{Models}
+All models are trained to predict a mask of the same size as the input spectrogram, with values ranging from 0 to 1, that is later multiplied by the input spectrogram elementwise to isolate the vocals. The .npy files (chuncks) turn into spectrograms using STFT and then their log magnitude is calculated. The loss function we used is the mean squared error (MSE) between the log magnitude of the predicted spectrogram and the target spectrogram ($loss = MSE(est\_log, tgt\_log)$). Then, for recinstructing the 1-D audio signal back, we use the Inverse Short Time Fourier Transform (ISTFT) with the phase of the original signal.
+
 \paragraph{U-Net}
-Our main model in this project was the U-Net. As mentioned, the idea is the via signal processing tools, we convert the task to image-to-image translation, hence it was natural to use a convolutional based architecture. Essentially, the U-Net follows an Encoder-Decoder (Codec) architecture. The encoder consists of down-sample convolutional blocks reducing spatial information. The decoder does the opposite with up-sample blocks. In addition, between each layer we added skip-connections that resemble a residual block, as can be seen in \cref{fig:U-Net}, to allow the model to learn the identity mapping.
-
-
+Our main model in this project was the U-Net. As mentioned, the idea is that via signal processing tools, we can convert the task to image-to-image translation, hence it was natural to use a convolutional based architecture. Essentially, the U-Net follows an Encoder-Decoder (Codec) architecture. The encoder consists of down-sample convolutional blocks reducing spatial information. The decoder does the opposite with up-sample blocks. In addition, between each layer we added concatenated skip-connections that connect corresponding layers in the encoder and decoder, as can be seen in \cref{fig:U-Net}, to allow preservation of spatial information and fine grained details. The classes which we implemented are: $ConvLayer2D, EncoderBlock, DecoderBlock$ and $TimeFrequencyDomainUNet$.
 
 \paragraph{LSTM}
-The baseline architecture was taken from the work of Derby et al. \cite{derby2024source}. Using torch library, we implemented a bidirectional LSTM-based model, feeding it with the spectrograms as sequential input. 
-\paragraph{U-Net + Multihead attention block}
-After implementing the U-Net model, we wanted to improve its performance. To do so, we decided to add multi-head attentional blocks.
+The baseline architecture was inspired from the work of Derby et al. \cite{derby2024source}. It consists of a Two-Layer bidirectional LSTM-based model, with the spectrograms as a sequential input. Each spectrogram (chunk that went through the STFT) is viewed as a frequencies-vector sequence. The resulting sequence is fed to an embedding layer (two fully connected layers, with ReLU activation, dropout and sigmoid) that predicts the mask. The class we implemented was $SpectrogramMaskingLSTM$ that encapsulates the torch LSTM module.
+
+\paragraph{Unettention (U-Net + Attention)}
+The next part of the notebook displays experiments with the capabilities of the attention mechanism to improve the U-Net model. . The classes we implemented are $MultiHeadSelfAttention2D$ and $UNetAttention$.
 
 \subsection{Training}
 We experimented with curriculum learning, i.e., trained the model in two separate stages. The first was $2 \rightarrow 1$ source separation. The vocals + one other random track were merged and given as input. After 50 epochs, stage two was initialized with the task of $4 \rightarrow 1$ source separation. The model continued training with the weights it had from stage one.
@@ -87,7 +88,9 @@ We experimented with curriculum learning, i.e., trained the model in two separat
 \section{Experiments}
 
 \section{Work Report}
+Bla Bla
 
+ The evaluation metrics we used are the standard in the field: Signal to Distortion Ratio (SDR), Signal to Interference Ratio (SIR) and Signal to Artifacts Ratio (SAR).
 
 
 
@@ -101,11 +104,6 @@ We experimented with curriculum learning, i.e., trained the model in two separat
 B.~Derby, L.~Dunker, S.~Galchar, S.~Jarmale, and A.~Setti,
 ``Source Separation \& Automatic Transcription for Music,''
 Submitted on 9 Dec 2024.
-
-\bibitem{gupta2024continual}
-A.~Gupta, A.~Rai, A.~Bansal, and V.~Arora,
-``Continual Learning for Singing Voice Separation with Human in the Loop Adaptation,''
-Indian Institute of Technology, Kanpur, India.
 
 \end{thebibliography}
 

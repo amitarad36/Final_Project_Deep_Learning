@@ -100,13 +100,13 @@ class TimeFrequencyDomainUNet(nn.Module):
 
 class MultiHeadSelfAttention2D(nn.Module):
 
-    def __init__(self, in_channels, num_heads=4, dropout=0.1):
+    def __init__(self, in_channels, num_of_heads=4, dropout=0.1):
         super().__init__()
-        self.num_heads = num_heads
-        self.head_dim = in_channels // num_heads
+        self.num_of_heads = num_of_heads
+        self.head_dim = in_channels // num_of_heads
         self.scale = self.head_dim ** -0.5
 
-        assert in_channels % num_heads == 0, "Channels must be divisible by num_heads"
+        assert in_channels % num_of_heads == 0, "Channels must be divisible by number of heads"
 
         self.qkv = nn.Linear(in_channels, in_channels * 3)
         self.proj = nn.Linear(in_channels, in_channels)
@@ -120,15 +120,12 @@ class MultiHeadSelfAttention2D(nn.Module):
         
 
         qkv = self.qkv(flattened)
-        qkv = qkv.reshape(b, h * w, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
+        qkv = qkv.reshape(b, h * w, 3, self.num_of_heads, self.head_dim).permute(2, 0, 3, 1, 4)
         q, k, v = qkv[0], qkv[1], qkv[2]
-
         attn = (q @ k.transpose(-2, -1)) * self.scale
         attn = attn.softmax(dim=-1)
         attn = self.dropout(attn)
-
         out = (attn @ v).transpose(1, 2).reshape(b, h * w, c)
-
         out = self.proj(out)
         out = self.dropout(out)
 
@@ -138,7 +135,7 @@ class MultiHeadSelfAttention2D(nn.Module):
 
 class UNetAttention(nn.Module):
 
-    def __init__(self, in_channels=1, out_channels=1, base_filters=32, num_layers=4, num_heads=4, batchnorm=True, dropout=0.1):
+    def __init__(self, in_channels=1, out_channels=1, base_filters=32, num_layers=4, num_of_heads=4, batchnorm=True, dropout=0.1):
         super().__init__()
         self.num_layers = num_layers
         self.encoders = nn.ModuleList()
@@ -154,7 +151,7 @@ class UNetAttention(nn.Module):
 
         self.bottleneck_conv = ConvLayer2D(bot_in, bot_out, kernel_size=3, stride=1, padding=1, batchnorm=batchnorm, dropout=dropout)
 
-        self.bottleneck_attn = MultiHeadSelfAttention2D(bot_out, num_heads=num_heads, dropout=dropout)
+        self.bottleneck_attn = MultiHeadSelfAttention2D(bot_out, num_of_heads=num_of_heads, dropout=dropout)
 
         for i in range(num_layers - 1, -1, -1):
             dec_in = bot_out if i == num_layers - 1 else base_filters * (2 ** (i + 1))
@@ -167,9 +164,10 @@ class UNetAttention(nn.Module):
     def forward(self, x):
         _, _, h, w = x.shape
         
-        multiple = 2 ** self.num_layers
-        pad_h = int((multiple - (h % multiple)) % multiple)
-        pad_w = int((multiple - (w % multiple)) % multiple)
+        # padding input spectrograms with zeros
+        size = 2 ** self.num_layers
+        pad_h = int((size - (h % size)) % size)
+        pad_w = int((size - (w % size)) % size)
         if pad_h > 0 or pad_w > 0:
             x = F.pad(x, (0, pad_w, 0, pad_h), mode="constant", value=0.0)
 
